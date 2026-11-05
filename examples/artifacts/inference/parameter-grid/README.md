@@ -133,7 +133,7 @@ or quality improvement is established by this example.
 
 ## Run
 
-The project uses the adjacent `ember-evaluator` through its existing local
+The project uses the adjacent `AscendAgent-Evaluator` through its existing local
 file dependency. Build that repository and refresh the frozen dependency install
 after changing its SDK, then build RSI. No dependency version change is needed.
 

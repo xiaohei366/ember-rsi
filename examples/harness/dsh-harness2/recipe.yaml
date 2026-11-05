@@ -11,7 +11,7 @@ policy:
     candidateRef: ${{ application.initialCandidate }}
   config:
     k: 1
-    concurrency: 1
+    concurrency: 2
     dataset:
       # TODO: Use evaluator-provided task discovery once the Evaluator SDK exposes a public enumeration API.
       taskIds:

@@ -627,7 +627,11 @@ export class ObservationQueries {
         while (call && !seen.has(string(call.callId))) {
           seen.add(string(call.callId));
           const path = optionalText(call.path);
-          if (path && /(?:^|\/)loop\/\d+\//.test(path)) return path;
+          if (
+            path &&
+            /(?:^|\/)(?:loop\/\d+|steps\/search\/iteration-\d+)\//.test(path)
+          )
+            return path;
           call =
             typeof call.parentCallId === 'string'
               ? byId.get(call.parentCallId)

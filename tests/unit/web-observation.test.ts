@@ -20,6 +20,14 @@ test('observation HTTP projects existing facts, isolates experiments and never m
   const directory = await mkdtemp(join(tmpdir(), 'rsi-observation-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const { facts, artifacts } = await seedObservation(directory);
+  const originPath =
+    'steps/search/iteration-0/proposals/key-a/propose/then/propose_inv';
+  const proposal = await facts.read('calls', 'call-first');
+  await facts.write('calls', 'call-first', {
+    ...proposal,
+    path: originPath,
+    output: { candidateRef: 'candidate-next' },
+  });
   const snapshot = async (): Promise<string> => {
     const paths = (await readdir(directory, { recursive: true }))
       .filter((path) => path.endsWith('.json'))
@@ -84,6 +92,10 @@ test('observation HTTP projects existing facts, isolates experiments and never m
   assert.equal(
     candidates.items.find((item) => item.ref === 'candidate-next')?.parentRef,
     'candidate-root',
+  );
+  assert.equal(
+    candidates.items.find((item) => item.ref === 'candidate-next')?.originPath,
+    originPath,
   );
   const measurements = parseMeasurements(await get('/run-alpha/measurements'));
   assert.equal(measurements.items[0]?.metrics[0]?.values.value, 0);

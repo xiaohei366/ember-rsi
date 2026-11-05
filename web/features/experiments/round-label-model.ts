@@ -23,15 +23,18 @@ export function harnessStage(
   path: string | null | undefined,
 ): HarnessStage | null {
   const match =
-    /(?:^|\/)loop\/(\d+)\/(base|invariant|domain|compose)\/[^/]+\/(execute_base|propose_inv|execute_inv|propose_dom|execute_dom|compose_candidate|execute_composed)(?:\/|$)/.exec(
+    /(?:^|\/)(?:loop\/|steps\/search\/iteration-)(\d+)\/(?:(?:base|invariant|domain|compose)\/[^/]+\/|(?:proposals|probes)\/key-[^/]+\/(?:propose|probe)\/(?:then|else)\/)(execute_base|propose_inv|execute_inv|propose_dom|execute_dom|compose_candidate|execute_composed)(?:\/|$)/.exec(
       path ?? '',
     );
   if (!match) return null;
   const variants = {
-    base: 'Base',
-    invariant: 'Invariant',
-    domain: 'Domain',
-    compose: 'Composed',
+    execute_base: 'Base',
+    propose_inv: 'Invariant',
+    execute_inv: 'Invariant',
+    propose_dom: 'Domain',
+    execute_dom: 'Domain',
+    compose_candidate: 'Composed',
+    execute_composed: 'Composed',
   } as const;
   return {
     round: `Round ${Number(match[1]) + 1}`,

@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="2240" height="820" viewBox="0 0 2240 820" role="img" aria-labelledby="diagram-title diagram-description" data-style="hand-drawn">
-  <title id="diagram-title">ember-rsi architecture</title>
+  <title id="diagram-title">AscendAgent-RSI architecture</title>
   <desc id="diagram-description">Three main groups use blue for Configuration, purple for RSI Core, and green for Experiment. Recipe selects and configures Policy. Policy Runtime interprets Policy, while Manager contains RuntimeContext, Event Pipeline, and Evidence Service. Proposer, Evaluator, and Selector follow a clockwise orbital loop around the central Application. Overlapping green experiment frames also contain Self-Evolution with Memory and Reflection, and an Agent Backend. Custom plugin cards have dashed orange borders; Memory and Reflection have solid orange borders. A dashed arrow connects Experiment to RuntimeContext. Hand-drawn vector edition with pencil hatching, softly irregular ink lines, and handwritten typography.</desc>
   <defs>
     <style>

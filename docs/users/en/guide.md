@@ -100,7 +100,7 @@ policy:
     candidateRef: ${{ application.initialCandidate }}
   config:
     k: 1
-    concurrency: 1
+    concurrency: 2
     memory: true
     dataset:
       taskIds:
@@ -139,7 +139,7 @@ budget:
 
 Place it beside the [Harness² baseline and Target](../../../examples/harness/dsh-harness2/README.md), and replace the model with one your endpoint supports. The evaluator model must support the configured output limit. Budgets are ceilings, not expected usage or a cost estimate.
 
-Harness² accepts `k`, `concurrency`, `dataset.taskIds`, and `memory` in `policy.config`. Goals and the delivery rubric are defined by the Policy; `goals` and `deliveryRubric` are not accepted configuration fields. `k` controls exploration slots; `concurrency` limits concurrent Policy branches. The Evaluator scheduler has a separate concurrency setting. With fixed `k`, the current flow makes `4 × k × task count` evaluator calls (base, invariant, domain, composition); one evaluator call can contain multiple tasks in other Policies.
+Harness² accepts `k`, `concurrency`, `dataset.taskIds`, and `memory` in `policy.config`. Goals and the delivery rubric are defined by the Policy; `goals` and `deliveryRubric` are not accepted configuration fields. `k` controls exploration slots. `concurrency` caps simultaneous Policy branches in each phase and defaults to `2`. INV and DOM proposals run in one phase, then their evaluations run in another phase. Compose waits for both sets of evaluations. Use `concurrency: 1` to run each phase serially. The Evaluator scheduler has a separate concurrency setting. The flow makes `4 × k × task count` Evaluator calls across Base, INV, DOM, and Compose.
 
 [WikiSkill](../../../examples/harness/dsh-wikiskill/README.md) instead accepts `maxRounds`, optional `stopAtScore`, and disjoint `trainTaskIds`, `validationTaskIds`, and `testTaskIds` under `dataset`. It learns from training evidence, gates candidates on validation measurements, and evaluates independent test tasks after its learning loop. Its Recipe selects `linux/amd64` task images, including on ARM64 hosts; Docker/emulation and benchmark prerequisites still apply. Consult the [current Recipe](../../../examples/harness/dsh-wikiskill/recipe.yaml) and [Policy schema](../../../src/policies/wikiskill/schemas/wikiskill-config.yaml) before changing fields.
 

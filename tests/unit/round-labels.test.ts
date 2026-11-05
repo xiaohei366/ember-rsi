@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildRoundLabels,
+  harnessStage,
   roundLabel,
 } from '../../web/features/experiments/round-label-model.js';
 import type {
@@ -173,4 +174,22 @@ test('Harness2 distinguishes task rounds, branch variants, repeated attempts and
     },
   ]);
   assert.equal(ambiguous.task('m0'), null);
+});
+
+test('Harness2 labels parallel proposal and probe paths from the Policy runtime', () => {
+  const prefix = 'steps/search/iteration-1';
+  for (const [path, variant] of [
+    ['base/key-a/execute_base', 'Base'],
+    ['proposals/key-a/propose/then/propose_inv', 'Invariant'],
+    ['proposals/key-b/propose/else/propose_dom', 'Domain'],
+    ['probes/key-a/probe/then/execute_inv', 'Invariant'],
+    ['probes/key-b/probe/else/execute_dom', 'Domain'],
+    ['compose/key-a/compose_candidate', 'Composed'],
+    ['compose/key-a/execute_composed', 'Composed'],
+  ]) {
+    assert.deepEqual(harnessStage(`${prefix}/${path}`), {
+      round: 'Round 2',
+      variant,
+    });
+  }
 });
