@@ -11,6 +11,7 @@ import {
 } from 'node:fs/promises';
 import { join, resolve, relative, dirname, isAbsolute, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { setTimeout } from 'node:timers/promises';
 import type {
   ArtifactStore,
   FactStore,
@@ -40,7 +41,25 @@ export async function atomic(path: string, value: unknown): Promise<void> {
   const temp = `${path}.${randomUUID()}.tmp`;
   try {
     await writeFile(temp, canonical(value), { mode: 0o600, flag: 'wx' });
-    await rename(temp, path);
+    // Windows readers can briefly deny replacement of an existing fact.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await rename(temp, path);
+        break;
+      } catch (error) {
+        if (
+          process.platform !== 'win32' ||
+          !(
+            error instanceof Error &&
+            'code' in error &&
+            error.code === 'EPERM'
+          ) ||
+          attempt === 4
+        )
+          throw error;
+        await setTimeout(50 * (attempt + 1));
+      }
+    }
   } finally {
     await rm(temp, { force: true });
   }

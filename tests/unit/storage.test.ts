@@ -12,6 +12,9 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { setTimeout } from 'node:timers/promises';
 import { FileArtifacts, FileFacts } from '../../src/runtime/storage/index.js';
 test('immutable artifacts round-trip and reject symlinks', async () => {
   const root = await mkdtemp(join(tmpdir(), 'rsi-store-'));
@@ -47,6 +50,65 @@ test('facts are atomic and reject unsafe identifiers', async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test(
+  'Windows fact replacement waits for a temporary reader and bounds permanent failures',
+  { skip: process.platform !== 'win32', timeout: 10000 },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'rsi-facts-reader-'));
+    const store = new FileFacts(root);
+    await store.write('calls', 'one', { status: 'running' });
+    const reader = spawn(
+      'powershell.exe',
+      [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '$file = [IO.File]::Open($env:RSI_TEST_FACT, "Open", "Read", "Read"); ' +
+          'try { [Console]::WriteLine("locked"); [Console]::ReadLine() | Out-Null } ' +
+          'finally { $file.Dispose() }',
+      ],
+      {
+        env: { ...process.env, RSI_TEST_FACT: join(root, 'calls/one.json') },
+        windowsHide: true,
+      },
+    );
+    const exited = once(reader, 'exit');
+    try {
+      await once(reader.stdout, 'data');
+      let settled = false;
+      const replacement = store
+        .write('calls', 'one', { status: 'succeeded' })
+        .then(
+          () => {
+            settled = true;
+            return null;
+          },
+          (error: unknown) => {
+            settled = true;
+            return error;
+          },
+        );
+      await setTimeout(60);
+      const waitedForReader = !settled;
+      reader.stdin.end('release\n');
+      assert.equal(await replacement, null);
+      assert.equal(waitedForReader, true);
+      assert.equal((await store.read('calls', 'one')).status, 'succeeded');
+      await mkdir(join(root, 'calls/directory.json'));
+      await assert.rejects(store.write('calls', 'directory', {}));
+      assert.deepEqual((await readdir(join(root, 'calls'))).sort(), [
+        'directory.json',
+        'one.json',
+      ]);
+    } finally {
+      reader.stdin.end();
+      await exited;
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test('file trees round-trip files above 32 MiB and totals above 128 MiB', async () => {
   const root = await mkdtemp(join(tmpdir(), 'rsi-large-store-'));
