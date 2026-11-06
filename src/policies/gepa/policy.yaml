@@ -1,0 +1,107 @@
+schemaVersion: rsi.policy/v1
+id: policy.gepa
+description: >-
+  GEPA reflective prompt evolution over a modular file target. Candidates are
+  sampled from the instance-wise Pareto frontier, mutated with sampled execution
+  feedback, merged through ancestry-aware crossover, and compared against their
+  genetic parents before selection scoring.
+input_schema:
+  type: object
+  additionalProperties: false
+  required: [candidateRef]
+  properties:
+    candidateRef: { type: string, minLength: 1 }
+config_schema:
+  $ref: ./schemas/config.yaml
+state_schema:
+  type: object
+  additionalProperties: false
+  required:
+    - optimizer
+    - completedRounds
+    - done
+    - rounds
+    - bestCandidateRef
+    - rolloutsUsed
+  properties:
+    optimizer: { type: object }
+    completedRounds: { type: integer, minimum: 0 }
+    done: { type: boolean }
+    rounds:
+      type: array
+      items: { type: object }
+    bestCandidateRef: { type: [string, 'null'] }
+    rolloutsUsed: { type: integer, minimum: 0 }
+state:
+  optimizer: {}
+  completedRounds: 0
+  done: false
+  rounds: []
+  bestCandidateRef: null
+  rolloutsUsed: 0
+output_schema:
+  $ref: ./schemas/output.yaml
+require:
+  optimizer:
+    contract: contract.gepa-optimizer
+  evaluator:
+    contract: contract.agentbench
+  reflector:
+    contract: contract.agent
+defaults:
+  bindings:
+    optimizer:
+      plugin: gepa.optimizer
+      config: {}
+steps:
+  - id: initialize
+    type: invoke
+    use: optimizer
+    with:
+      action: initialize
+      candidateRef: ${{ input.candidateRef }}
+      settings: ${{ config }}
+  - id: save_initial
+    type: state
+    state:
+      optimizer: ${{ steps.initialize.output.state }}
+      completedRounds: ${{ steps.initialize.output.state.completedRounds }}
+      done: ${{ steps.initialize.output.state.done }}
+      rounds: ${{ steps.initialize.output.state.rounds }}
+      bestCandidateRef: ${{ steps.initialize.output.state.bestCandidateRef }}
+      rolloutsUsed: ${{ steps.initialize.output.state.rolloutsUsed }}
+  - id: optimize
+    type: loop
+    maxIterations: ${{ config.maxRounds }}
+    while: ${{ !state.done }}
+    steps:
+      - id: next
+        type: invoke
+        use: optimizer
+        with:
+          action: step
+          state: ${{ state.optimizer }}
+          settings: ${{ config }}
+      - id: save
+        type: state
+        state:
+          optimizer: ${{ steps.next.output.state }}
+          completedRounds: ${{ steps.next.output.state.completedRounds }}
+          done: ${{ steps.next.output.state.done }}
+          rounds: ${{ steps.next.output.state.rounds }}
+          bestCandidateRef: ${{ steps.next.output.state.bestCandidateRef }}
+          rolloutsUsed: ${{ steps.next.output.state.rolloutsUsed }}
+output:
+  baselineCandidateRef: ${{ state.optimizer.baselineCandidateRef }}
+  bestCandidateRef: ${{ state.optimizer.bestCandidateRef }}
+  bestAggregateScore: ${{ state.optimizer.bestAggregateScore }}
+  completedRounds: ${{ state.optimizer.completedRounds }}
+  rolloutsUsed: ${{ state.optimizer.rolloutsUsed }}
+  maxRollouts: ${{ config.maxRollouts }}
+  feedbackTaskIds: ${{ state.optimizer.feedbackTaskIds }}
+  selectionTaskIds: ${{ state.optimizer.selectionTaskIds }}
+  datasetDegenerate: ${{ state.optimizer.datasetDegenerate }}
+  stopReason: ${{ state.optimizer.stopReason }}
+  candidates: ${{ state.optimizer.candidates }}
+  rounds: ${{ state.optimizer.rounds }}
+  weightsChanged: false

@@ -8,6 +8,7 @@ import { codexDefinition } from '../plugins/agent-codex/index.js';
 import { proposerDefinition } from '../plugins/proposer-agent/index.js';
 import { gridProposerDefinition } from '../plugins/proposer-grid/index.js';
 import { optunaProposerDefinition } from '../plugins/proposer-optuna/index.js';
+import { gepaOptimizerDefinition } from '../plugins/gepa/index.js';
 import { memoryDefinition } from '../plugins/memory-agent/index.js';
 import { reflectionDefinition } from '../plugins/reflection-agent/index.js';
 import { agentbenchDefinition } from '../plugins/evaluator-agentbench/index.js';
@@ -25,6 +26,7 @@ export async function registerBuiltins(registry: Registry): Promise<void> {
     proposerDefinition,
     gridProposerDefinition,
     optunaProposerDefinition,
+    gepaOptimizerDefinition,
     memoryDefinition,
     reflectionDefinition,
     agentbenchDefinition,
@@ -38,6 +40,7 @@ export async function registerBuiltins(registry: Registry): Promise<void> {
     'wikiskill/policy.yaml',
     'parameter-grid/policy.yaml',
     'parameter-optuna/policy.yaml',
+    'gepa/policy.yaml',
   ]) {
     const file = fileURLToPath(new URL(`../policies/${path}`, import.meta.url));
     const policy = await Policy.load(file, registry);

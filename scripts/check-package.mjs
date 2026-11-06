@@ -200,13 +200,15 @@ export function register(registry) {
   );
   assert.equal(
     catalog.plugins.length,
-    13,
-    'all thirteen plugin definitions ship in the archive',
+    14,
+    'all fourteen plugin definitions ship in the archive',
   );
   assert.ok(catalog.plugins.includes('agent.codex'));
+  assert.ok(catalog.plugins.includes('gepa.optimizer'));
   assert.deepEqual(
     [...catalog.policies].sort(),
     [
+      'policy.gepa',
       'policy.harness2',
       'policy.parameter-grid',
       'policy.parameter-optuna',
@@ -214,7 +216,7 @@ export function register(registry) {
     ],
     'all built-in policies ship in the archive',
   );
-  for (const name of ['dsh-harness2', 'dsh-wikiskill']) {
+  for (const name of ['dsh-harness2', 'dsh-wikiskill', 'dsh-gepa']) {
     const example = join(outside, name);
     await cp(join(root, 'examples/harness', name), example, {
       recursive: true,
@@ -240,6 +242,13 @@ export function register(registry) {
         validation.plugins.includes('reflection.agent'),
         'installed consumer assembles Reflection with its packaged default prompt',
       );
+    if (name === 'dsh-gepa') {
+      assert.equal(validation.policyId, 'policy.gepa');
+      assert.ok(
+        validation.plugins.includes('gepa.optimizer'),
+        'installed consumer assembles built-in GEPA without an extension directory',
+      );
+    }
   }
   for (const name of ['shared', 'parameter-grid', 'parameter-tpe']) {
     await cp(
@@ -327,9 +336,10 @@ import {readFile,realpath,stat,writeFile,mkdir} from 'node:fs/promises';
 import {dirname,resolve} from 'node:path';
 import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
-import {createRuntime,Policy,Binding,proposerContract,gridProposerContract,parameterSearchProposerContract,applicationContract,defineContract,RuntimeContext} from 'ember-rsi';
-import {RuntimeContext as ContractContext} from 'ember-rsi/contracts';
+import {createRuntime,Policy,Binding,proposerContract,gridProposerContract,parameterSearchProposerContract,gepaOptimizerContract,applicationContract,defineContract,RuntimeContext} from 'ember-rsi';
+import {RuntimeContext as ContractContext,gepaOptimizerContract as ContractsGepaOptimizerContract} from 'ember-rsi/contracts';
 assert.equal(RuntimeContext,ContractContext);
+assert.equal(gepaOptimizerContract,ContractsGepaOptimizerContract);
 const context=new RuntimeContext().extend({traceId:'consumer'});
 const runtime=await createRuntime({rootDirectory:${JSON.stringify(outside)},context});
 assert.equal(runtime.context.traceId,'consumer');
@@ -365,8 +375,13 @@ try {
  for(const id of runtime.registry.catalog().policies){
   const path=runtime.registry.policy(id),policy=await Policy.load(path,runtime.registry);
   assert.equal(policy.toJSON().schemaVersion,'rsi.policy/v1');
-  const requirement=policy.requirements.invariantProposer??policy.requirements.proposer;
-  assert.deepEqual(requirement,id==='policy.parameter-grid'?gridProposerContract:id==='policy.parameter-optuna'?parameterSearchProposerContract:proposerContract,'installed Policy and implementation share the public Proposer type');
+  if(id==='policy.gepa'){
+   assert.deepEqual(policy.requirements.optimizer,gepaOptimizerContract,'installed GEPA Policy uses the public optimizer contract');
+   assert.deepEqual(runtime.registry.get('gepa.optimizer').contract,gepaOptimizerContract,'installed GEPA implementation uses the public optimizer contract');
+  }else{
+   const requirement=policy.requirements.invariantProposer??policy.requirements.proposer;
+   assert.deepEqual(requirement,id==='policy.parameter-grid'?gridProposerContract:id==='policy.parameter-optuna'?parameterSearchProposerContract:proposerContract,'installed Policy and implementation share the public Proposer type');
+  }
   assert.deepEqual(runtime.registry.get('proposer.agent').contract,proposerContract);
   const reflection=policy.defaults.reflection;
   if(reflection&&typeof reflection==='object'&&!Array.isArray(reflection))await readFile(resolve(dirname(path),reflection.configFile),'utf8');
@@ -503,6 +518,8 @@ new Registry().registerOperation(definition);
     join(consumer, 'contracts-consumer.ts'),
     `
 import { RuntimeContext, type OperationDefinition } from 'ember-rsi/contracts';
+import type { GepaSettings, GepaOptimizerInput, GepaOptimizerOutput } from 'ember-rsi';
+import type { GepaSettings as ContractGepaSettings, GepaOptimizerInput as ContractGepaInput, GepaOptimizerOutput as ContractGepaOutput, JsonObject } from 'ember-rsi/contracts';
 declare module 'ember-rsi/contracts' {
  interface RuntimeContext { contractsOnlyTrace?: string; }
 }
@@ -510,6 +527,14 @@ const context=new RuntimeContext().extend({contractsOnlyTrace:'consumer'});
 const signal:AbortSignal=context.signal;
 const result:Promise<import('ember-rsi/contracts').JsonValue>=context.invoke('worker',{});
 void signal;void result;
+export function checkGepaInput(settings:GepaSettings,state:JsonObject):GepaOptimizerInput {
+ const publicSettings:ContractGepaSettings=settings;
+ const input:ContractGepaInput={action:'step',settings:publicSettings,state};
+ return input;
+}
+export function checkGepaOutput(output:GepaOptimizerOutput):ContractGepaOutput {
+ return output;
+}
 export function checkOperation(definition:OperationDefinition):void {
  const operation=definition.create({},context);
  void operation;
