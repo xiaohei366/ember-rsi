@@ -1,0 +1,19 @@
+# Fixed development requirements
+
+Implement GEPA v2 in full, according to `instruction.md` and `/opt/gepa-materials/gepa-v2.pdf`. These materials specify behavior and acceptance, while the developer chooses the implementation structure.
+
+Use only `rsi.recipe/v1` and `rsi.policy/v1`. New plugins implement registered public contracts and use public artifacts, candidates, measurements, workspace and invocation services. Keep `src/runtime/`, `src/entries/cli/` and `src/runtime/builtins.ts` unchanged. Register through `.gepa/extension/index.mjs`; importing files alone must not enable the extension. Do not change the outer skill-development infrastructure or any existing acceptance criteria. If a required public capability is unavailable, report it explicitly.
+
+Allowed delivery changes are new files under `src/plugins/`, `src/policies/` and `src/contracts/plugin-types/`, new `tests/unit/gepa*.test.ts` or `tests/unit/gepa*.test.mjs` tests, and files under `.gepa/` except fixed `.gepa/input/`. Keep every pre-existing baseline file unchanged. Do not edit package manifests, lockfiles, existing contract exports, the root README or engineering configuration. Import new contract modules directly where necessary. The existing TypeScript build includes newly added source modules.
+
+The fixed Office AgentBundle is `.gepa/input/office-bundle/`. The sole inner optimization path is `plugins/office-base/prompts/office-discipline.md`; use `.gepa/input/office-target.yaml`. Every other Office file stays fixed. All model roles use `ds-v4.1-flash` with parameters supplied by the experiment. Read credentials from local environment references; do not write credentials to source or examples.
+
+The runnable Recipe is `.gepa/recipe.yaml`; its plugin entry is `.gepa/extension/index.mjs`. Relative dependencies must be exported with the delivery. The independent runner uses a fresh process and fresh run directory. It requires a completed minimal round and a real evaluation result for `workbuddy/board-material-update-timeline-excel`, and checks framework records. Console success text or exit code alone does not establish acceptance. Human review assesses algorithm logic. Automatic success imposes no reward threshold.
+
+When adding TypeScript modules under `src/`, the `.gepa/extension/index.mjs` entry must import their generated JavaScript from `dist/` after the normal build. The independent runner rebuilds the retained source using the frozen host dependencies; do not export or depend on your development self-test build state.
+
+Use deterministic controlled tests to exercise multi-instance and multi-module behavior, including edge cases beyond the one-task Office integration. Exercise budget stopping, cancellation, no-change proposals, failed evaluations, candidate ancestry and retained outputs. Ordinary development self-tests must not call real WorkBuddy or use model credentials. Keep dependencies fixed and use the preinstalled offline environment. Record which checks actually ran and any limitations in the final development response; an implementation index is optional.
+
+Run repository commands with `/usr/local/bin/pnpm`, the prepared pnpm 11.22.0 executable. The harness may prepend a different pnpm version to `PATH`. The task disables pnpm's automatic dependency verification/install on script startup because the exact dependencies are already prepared and moved into this fresh workspace; do not install or download packages.
+
+The original repository's `skills/ember-rsi` tree is omitted from this prepared baseline. The only authoritative skill version is the current candidate supplied by the development AgentBundle. Its complete entry is supplied at startup, and references/assets are available at the path identified by that Bundle. Do not modify that supplied skill. Preserve `.gepa/input/` and the fixed original materials. Do not access external GEPA repositories, packages or implementation-derived explanations.

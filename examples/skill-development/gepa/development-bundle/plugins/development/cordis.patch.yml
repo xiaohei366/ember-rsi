@@ -1,0 +1,3 @@
+- insert:
+    - id: development
+      name: '@ember-rsi/gepa-development'

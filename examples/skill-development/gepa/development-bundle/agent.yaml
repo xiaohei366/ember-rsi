@@ -1,0 +1,3 @@
+# Model parameters and credentials come from the fixed Evaluator service binding.
+plugins:
+  development: {}

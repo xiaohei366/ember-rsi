@@ -1,0 +1,14 @@
+schemaVersion: rsi.target/v1
+id: ember-rsi-skill-documentation
+entries:
+  - path: skills/ember-rsi/SKILL.md
+    kind: file
+    description: The reusable RSI development skill.
+    changes: [modify]
+  - path: skills/ember-rsi/references
+    kind: directory
+    description: Reusable RSI development guidance.
+    include: ['**/*.md']
+    changes: [create, modify, delete]
+protected:
+  - skills/ember-rsi/assets/**

@@ -1,0 +1,312 @@
+schemaVersion: rsi.policy/v1
+id: policy.skill-development
+description: Optimize a development skill through fresh implementation attempts and human review.
+input_schema:
+  $ref: ../../contracts/policies/candidate-input.yaml
+input:
+  candidateRef: ${{ application.initialCandidate }}
+config_schema:
+  type: object
+  properties:
+    maxRounds: { type: integer, minimum: 1, maximum: 100000, default: 10 }
+    goal:
+      type: string
+      minLength: 1
+      default: Improve reusable RSI Policy and plugin development guidance using observed quality, human issues, and development token cost. Preserve fixed support assets. Prefer quality first and lower development cost among comparably successful versions.
+  additionalProperties: false
+state_schema:
+  type: object
+  properties:
+    status: { enum: [running, accepted, unfinished] }
+    stopReason: { type: string }
+    phase: { enum: [evaluate, propose] }
+    attempts: { type: integer, minimum: 0 }
+    candidateRef: { type: string }
+    proposalRationale: { type: string }
+    attemptId: { type: string }
+    reportRef: { type: [string, 'null'] }
+    preflightReportRef: { type: [string, 'null'] }
+    firstReportRef: { type: [string, 'null'] }
+    reportRefs: { type: array, items: { type: string } }
+    evidenceRefs: { type: array, items: { type: string } }
+    feedbackRefs: { type: array, items: { type: string } }
+    sources:
+      type: array
+      items:
+        type: object
+        properties:
+          candidateRef: { type: string }
+        required: [candidateRef]
+        additionalProperties: false
+    acceptanceIssues: { type: array, items: { type: string } }
+    packageRef: { type: [string, 'null'] }
+  required:
+    [
+      status,
+      stopReason,
+      phase,
+      attempts,
+      candidateRef,
+      proposalRationale,
+      attemptId,
+      reportRef,
+      preflightReportRef,
+      firstReportRef,
+      reportRefs,
+      evidenceRefs,
+      feedbackRefs,
+      sources,
+      acceptanceIssues,
+      packageRef,
+    ]
+  additionalProperties: false
+state:
+  status: running
+  stopReason: ''
+  phase: evaluate
+  attempts: 0
+  candidateRef: ${{ input.candidateRef }}
+  proposalRationale: Original skill baseline; no outer proposal has been applied.
+  attemptId: ''
+  reportRef: null
+  preflightReportRef: null
+  firstReportRef: null
+  reportRefs: []
+  evidenceRefs: []
+  feedbackRefs: []
+  sources:
+    - candidateRef: ${{ input.candidateRef }}
+  acceptanceIssues: []
+  packageRef: null
+output_schema:
+  type: object
+  properties:
+    status: { enum: [accepted, unfinished] }
+    stopReason: { type: string }
+    attempts: { type: integer, minimum: 0 }
+    candidateRef: { type: string }
+    firstReportRef: { type: [string, 'null'] }
+    preflightReportRef: { type: [string, 'null'] }
+    reportRefs: { type: array, items: { type: string } }
+    feedbackRefs: { type: array, items: { type: string } }
+    packageRef: { type: [string, 'null'] }
+  required:
+    [
+      status,
+      stopReason,
+      attempts,
+      candidateRef,
+      preflightReportRef,
+      firstReportRef,
+      reportRefs,
+      feedbackRefs,
+      packageRef,
+    ]
+  additionalProperties: false
+require:
+  agent:
+    contract: contract.agent
+  evaluator:
+    contract: contract.development
+  proposer:
+    contract: contract.proposer
+  reviewer:
+    contract: contract.human-review
+defaults:
+  bindings:
+    proposer:
+      plugin: proposer.skill
+      config:
+        agentRef: agent
+    reviewer:
+      plugin: human.review
+steps:
+  - id: preflight
+    type: invoke
+    use: evaluator
+    with:
+      action: preflight
+      candidateRef: ${{ state.candidateRef }}
+  - id: retain_preflight
+    type: state
+    state:
+      preflightReportRef: ${{ steps.preflight.output.reportRef }}
+  - id: failed_preflight
+    type: if
+    if: ${{ !steps.preflight.output.ready }}
+    then:
+      steps:
+        - id: unfinished
+          type: state
+          state:
+            status: unfinished
+            stopReason: preflight-failed
+  - id: optimize
+    type: loop
+    # The DSL requires a finite transition ceiling. Only evaluate increments attempts;
+    # proposals and human responses never consume development rounds.
+    maxIterations: 100000
+    while: ${{ state.status == 'running' && state.attempts < config.maxRounds }}
+    steps:
+      - id: propose_if_needed
+        type: if
+        if: ${{ state.phase == 'propose' }}
+        then:
+          steps:
+            - id: propose
+              type: invoke
+              use: proposer
+              with:
+                parent: ${{ state.candidateRef }}
+                goal: ${{ config.goal }}
+                evidenceRefs: ${{ state.evidenceRefs }}
+                sources: ${{ state.sources }}
+            - id: changed
+              type: if
+              if: ${{ steps.propose.output.status == 'created' }}
+              then:
+                steps:
+                  - id: chosen
+                    type: state
+                    state:
+                      candidateRef: ${{ steps.propose.output.candidateRef }}
+                  - id: adopt
+                    type: state
+                    state:
+                      sources: ${{ append(state.sources, steps.chosen.output) }}
+                      proposalRationale: ${{ steps.propose.output.rationale }}
+                      phase: evaluate
+              else:
+                steps:
+                  - id: no_change_review
+                    type: invoke
+                    use: reviewer
+                    with:
+                      attemptId: ${{ state.attemptId }}
+                      candidateRef: ${{ state.candidateRef }}
+                      reportRef: ${{ state.reportRef }}
+                      context: no-change
+                      automaticAccepted: false
+                      issues: ${{ state.acceptanceIssues }}
+                      skillChangeExplanation: ${{ steps.propose.output.rationale }}
+                  - id: save_no_change_review
+                    type: state
+                    state:
+                      evidenceRefs: ${{ append(state.evidenceRefs, steps.no_change_review.output.feedbackRef) }}
+                      feedbackRefs: ${{ append(state.feedbackRefs, steps.no_change_review.output.feedbackRef) }}
+                      acceptanceIssues: ${{ concat(state.acceptanceIssues, steps.no_change_review.output.issues) }}
+                  - id: no_change_stop
+                    type: if
+                    if: ${{ steps.no_change_review.output.action == 'stop' || steps.no_change_review.output.action == 'timed-out' }}
+                    then:
+                      steps:
+                        - id: unfinished
+                          type: state
+                          state:
+                            status: unfinished
+                            stopReason: ${{ steps.no_change_review.output.action }}
+            - id: next_transition
+              type: control
+              control: continue
+      - id: count_attempt
+        type: state
+        state:
+          attempts: ${{ state.attempts + 1 }}
+      - id: evaluate
+        type: invoke
+        use: evaluator
+        with:
+          action: evaluate
+          candidateRef: ${{ state.candidateRef }}
+          attempt: ${{ state.attempts }}
+          acceptanceIssues: ${{ state.acceptanceIssues }}
+      - id: retain_attempt
+        type: state
+        state:
+          attemptId: ${{ steps.evaluate.output.attemptId }}
+          reportRef: ${{ steps.evaluate.output.reportRef }}
+          firstReportRef: ${{ if(state.firstReportRef == null, steps.evaluate.output.reportRef, state.firstReportRef) }}
+          reportRefs: ${{ append(state.reportRefs, steps.evaluate.output.reportRef) }}
+          evidenceRefs: ${{ append(state.evidenceRefs, steps.evaluate.output.reportRef) }}
+      - id: established_development_failure
+        type: if
+        if: ${{ steps.evaluate.output.outcome == 'development-failure' }}
+        then:
+          steps:
+            - id: need_proposal
+              type: state
+              state:
+                phase: propose
+            - id: next_transition
+              type: control
+              control: continue
+      - id: review
+        type: invoke
+        use: reviewer
+        with:
+          attemptId: ${{ state.attemptId }}
+          candidateRef: ${{ state.candidateRef }}
+          reportRef: ${{ state.reportRef }}
+          context: ${{ if(steps.evaluate.output.outcome == 'automatic-pass', 'implementation', 'failure') }}
+          automaticAccepted: ${{ steps.evaluate.output.outcome == 'automatic-pass' }}
+          issues: ${{ state.acceptanceIssues }}
+          skillChangeExplanation: ${{ state.proposalRationale }}
+      - id: retain_review
+        type: state
+        state:
+          evidenceRefs: ${{ append(state.evidenceRefs, steps.review.output.feedbackRef) }}
+          feedbackRefs: ${{ append(state.feedbackRefs, steps.review.output.feedbackRef) }}
+          acceptanceIssues: ${{ concat(state.acceptanceIssues, steps.review.output.issues) }}
+      - id: accepted
+        type: if
+        if: ${{ steps.review.output.action == 'accept' }}
+        then:
+          steps:
+            - id: export
+              type: invoke
+              use: evaluator
+              with:
+                action: export
+                candidateRef: ${{ state.candidateRef }}
+                reportRef: ${{ state.reportRef }}
+                reviewRef: ${{ steps.review.output.feedbackRef }}
+            - id: finish
+              type: state
+              state:
+                status: accepted
+                stopReason: human-accepted
+                packageRef: ${{ steps.export.output.packageRef }}
+      - id: stopped
+        type: if
+        if: ${{ steps.review.output.action == 'stop' || steps.review.output.action == 'timed-out' }}
+        then:
+          steps:
+            - id: finish
+              type: state
+              state:
+                status: unfinished
+                stopReason: ${{ steps.review.output.action }}
+      - id: next_phase
+        type: state
+        state:
+          phase: ${{ if(steps.review.output.action == 'retry', 'evaluate', 'propose') }}
+  - id: limit
+    type: if
+    if: ${{ state.status == 'running' }}
+    then:
+      steps:
+        - id: unfinished
+          type: state
+          state:
+            status: unfinished
+            stopReason: ${{ if(state.attempts >= config.maxRounds, 'max-rounds', 'policy-transition-limit') }}
+output:
+  status: ${{ state.status }}
+  stopReason: ${{ state.stopReason }}
+  attempts: ${{ state.attempts }}
+  candidateRef: ${{ state.candidateRef }}
+  preflightReportRef: ${{ state.preflightReportRef }}
+  firstReportRef: ${{ state.firstReportRef }}
+  reportRefs: ${{ state.reportRefs }}
+  feedbackRefs: ${{ state.feedbackRefs }}
+  packageRef: ${{ state.packageRef }}

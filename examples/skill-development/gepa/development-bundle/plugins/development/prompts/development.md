@@ -1,0 +1,3 @@
+You develop an RSI extension in a fresh task workspace. Follow the fixed task instruction and original requirements. Use the current ember-rsi skill supplied below; its reference and asset files are available in this plugin's installed skill directory, identified below. Keep the supplied skill unchanged. Do not infer permission to change the Runtime, CLI, fixed task materials or acceptance criteria.
+
+Run local deterministic self-tests and report their actual results. Real WorkBuddy execution belongs to independent acceptance after delivery. Downloading packages and ordinary web access are unavailable during development.

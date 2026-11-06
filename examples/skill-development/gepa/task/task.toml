@@ -1,0 +1,24 @@
+version = "1.0"
+artifacts = [{ source = "/workspace/repository", exclude = ["node_modules", ".git", ".rsi", ".scratch", "dist"] }]
+
+[task]
+name = "gepa-development"
+
+[environment]
+workdir = "/workspace/repository"
+build_timeout_sec = 600
+network_mode = "no-network"
+cpus = 4
+memory = "8g"
+
+[environment.env]
+pnpm_config_verify_deps_before_run = "false"
+
+[agent]
+timeout_sec = 3600
+network_mode = "no-network"
+
+[verifier]
+type = "shell"
+timeout_sec = 120
+network_mode = "no-network"
