@@ -83,7 +83,7 @@ ember-rsi dashboard --port <端口号>
 - 当前界面只读，启动、恢复和取消通过 CLI 进行。
 - 默认将 `/api` 代理到 4317 端口。
 
-![rsi-studio-wikiskill-compact](../assets/rsi-studio-wikiskill-compact.gif)
+![rsi-studio-wikiskill-compact](/Users/gideonzhao/Code/ember-rsi/docs/users/assets/rsi-studio-wikiskill-compact.gif)
 
 ## 排障
 
