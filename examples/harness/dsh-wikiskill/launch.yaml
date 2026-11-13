@@ -1,0 +1,95 @@
+schemaVersion: rsi.launch/v1
+recipe: ./recipe.yaml
+title: DSH WikiSkill · Terminal-Bench 4.0
+summary: Learn skills from training tasks, gate on validation, and report independent test results.
+idPrefix: wikiskill
+env:
+  - { name: MODEL_NAME, label: Optimizer and evaluation model }
+  - { name: MODEL_ENDPOINT, label: Model endpoint }
+  - { name: MODEL_API_KEY, label: Model API key, secret: true }
+groups:
+  - title: Dataset
+    params:
+      - {
+          key: trainTasks,
+          label: Training task IDs,
+          path: policy.config.dataset.trainTaskIds,
+          type: list,
+          min: 1,
+        }
+      - {
+          key: validationTasks,
+          label: Validation task IDs,
+          path: policy.config.dataset.validationTaskIds,
+          type: list,
+          min: 1,
+        }
+      - {
+          key: testTasks,
+          label: Independent test task IDs,
+          path: policy.config.dataset.testTaskIds,
+          type: list,
+          min: 0,
+        }
+  - title: Learning
+    params:
+      - {
+          key: rounds,
+          label: Maximum rounds,
+          path: policy.config.maxRounds,
+          type: int,
+          min: 0,
+          max: 100000,
+        }
+      - {
+          key: concurrency,
+          label: Evaluation concurrency,
+          path: bindings.evaluator.config.scheduler.concurrency,
+          type: int,
+          min: 1,
+        }
+  - title: Budget
+    params:
+      - {
+          key: wall,
+          label: Wall-clock budget,
+          path: budget.elapsedWallMs,
+          type: duration,
+          unit: h,
+          store: ms,
+        }
+  - title: Advanced
+    advanced: true
+    params:
+      - {
+          key: evalTimeout,
+          label: Evaluation task timeout,
+          path: bindings.evaluator.config.run.timeoutSeconds,
+          type: duration,
+          unit: min,
+          store: s,
+        }
+      - {
+          key: platform,
+          label: Container platform,
+          path: bindings.evaluator.config.environment.platform,
+          type: string,
+        }
+      - {
+          key: agentTimeout,
+          label: Agent request timeout,
+          path: bindings.agent.config.timeoutMs,
+          type: duration,
+          unit: min,
+          store: ms,
+        }
+      - {
+          key: executionTimeout,
+          label: Agent execution timeout,
+          path: bindings.agent.config.executionTimeoutMs,
+          type: duration,
+          unit: min,
+          store: ms,
+        }
+disjoint:
+  - [trainTasks, validationTasks, testTasks]

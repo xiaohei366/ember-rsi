@@ -12,6 +12,7 @@ policy:
   config:
     k: 1
     concurrency: 1
+    memory: true
     dataset:
       # TODO: Use evaluator-provided task discovery once the Evaluator SDK exposes a public enumeration API.
       taskIds:

@@ -6,6 +6,10 @@
 
 从应当拥有实验 `.rsi/` 目录的工作区运行命令。Recipe 资源路径按声明文件解析，默认数据存储位置则取决于进程工作目录。分别启动的 CLI 和工作台从同一工作区运行时会读取同一存储。
 
+## 示例引导启动
+
+在源码仓库中运行 `node examples/launcher/launch.mjs`，即可分组配置 Harness² 和 WikiSkill。启动器在 `.rsi/launcher/` 下生成 Recipe，自动执行 `doctor --static`，并提供启动、进度、续跑和摘要。环境变量、答案重放及静态验证的范围见[启动器指南](../../../examples/launcher/README_zh.md)。
+
 ## CLI 命令
 
 使用 `ember-rsi --help` 查看命令列表，使用 `ember-rsi <command> --help` 查看某个命令的语法。在源码仓库中未全局安装时，可以使用 `pnpm ember-rsi`。

@@ -6,6 +6,10 @@ This guide explains how to validate, run, inspect, cancel, and resume experiment
 
 Run commands from the workspace that should own the experiment's `.rsi/` directory. Recipe resource paths resolve against their declaring files; the default data store follows the process's working directory. Separate CLI and dashboard processes observe the same store when launched from the same workspace.
 
+## Guided examples
+
+In a source checkout, run `node examples/launcher/launch.mjs` for grouped Harness² and WikiSkill configuration. The launcher generates a Recipe under `.rsi/launcher/`, automatically runs `doctor --static`, and offers execution, progress, resume and summaries. See the [launcher guide](../../../examples/launcher/README.md) for environment variables, saved answers and the limits of static verification.
+
 ## CLI commands
 
 Use `ember-rsi --help` to list commands and `ember-rsi <command> --help` for a command's syntax. From a source checkout without a global install, use `pnpm ember-rsi`.
