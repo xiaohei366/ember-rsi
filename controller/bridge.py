@@ -89,14 +89,20 @@ class Bridge:
 
         self.target = Remote('gitcode', cfg['gitcode']['repo'], bot_token, self.bot['username'])
         self.target_api = Api('gitcode', bot_token, self.target.repo)
-        if not same_account(self.target_api.request('GET', '/user'), self.bot):
+        profile = self.target_api.request('GET', '/user')
+        if not same_account(profile, self.bot):
             raise BridgeError('The destination token does not belong to the configured bot')
-        emails = self.target_api.request('GET', '/emails')
-        if isinstance(emails, dict):
-            emails = [emails]
-        if not isinstance(emails, list) or not any(
-                item.get('email') == self.bot['email'] and item.get('state') == 'confirmed' for item in emails):
-            raise BridgeError('The configured bot email must be confirmed on the destination account')
+        email = self.bot['email']
+        authenticated_alias = (email.rpartition('@')[2].casefold() == 'noreply.gitcode.com'
+                               and profile.get('email') == email)
+        if not authenticated_alias:
+            emails = self.target_api.request('GET', '/emails')
+            if isinstance(emails, dict):
+                emails = [emails]
+            if not isinstance(emails, list) or not any(
+                    item.get('email') == email and item.get('state') == 'confirmed' for item in emails):
+                raise BridgeError('The configured bot email must be confirmed on the destination account '
+                                  'or match its GitCode-issued noreply address')
         target_info = checked_repo(self.target_api)
         if target_info.get('private') not in (1, True) or target_info.get('public') in (1, True):
             raise BridgeError('The destination repository must be private')
