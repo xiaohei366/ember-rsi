@@ -1,1 +1,1 @@
-GitHub → GitCode v4 acceptance: mapped source author.
+GitHub → GitCode v4 acceptance: conflicting source edit.
