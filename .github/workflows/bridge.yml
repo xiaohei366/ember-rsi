@@ -68,7 +68,10 @@ jobs:
           if isinstance(rows, dict):
               rows = [rows]
           confirmed = {row['email'] for row in rows if row.get('state') == 'confirmed'}
+          unconfirmed = sum(row.get('state') in ('unconfirmed', 'pending') for row in rows)
+          print(f'Email endpoint returned {len(rows)} address records, {len(confirmed)} confirmed, {unconfirmed} pending or unconfirmed')
           preferred = profile.get('email')
+          print(f'The authenticated profile exposes a preferred email: {bool(preferred)}')
           if config['email'] in confirmed:
               selected = config['email']
           elif preferred in confirmed:
