@@ -1,0 +1,1 @@
+Recovery A. Verify the pending GitCode PR is reused after its first merge fails.
