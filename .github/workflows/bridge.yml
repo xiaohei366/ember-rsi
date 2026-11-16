@@ -1,0 +1,51 @@
+name: Sync merged code
+
+'on':
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Bridge operation
+        type: choice
+        default: check
+        options:
+          - check
+          - apply
+
+permissions: {}
+
+jobs:
+  bridge:
+    if: ${{ !github.event.deleted && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: bridge-sync
+    concurrency:
+      group: bridge-state
+      queue: max
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out the merged source revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Apply the selected operation
+        env:
+          BRIDGE_OPERATION: ${{ github.event_name == 'push' && 'apply' || inputs.operation }}
+          BRIDGE_CONFIG_JSON: ${{ secrets.BRIDGE_CONFIG_JSON }}
+          BRIDGE_TARGET_TOKEN: ${{ secrets.BRIDGE_TARGET_TOKEN }}
+          BRIDGE_SOURCE_READ_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          umask 077
+          : "${BRIDGE_CONFIG_JSON:?Set the bridge configuration secret}"
+          config="$(mktemp)"
+          trap 'rm -f "$config"' EXIT
+          printf '%s\n' "$BRIDGE_CONFIG_JSON" > "$config"
+          case "$BRIDGE_OPERATION" in
+            check|apply) ;;
+            *) echo 'Unsupported bridge operation' >&2; exit 1 ;;
+          esac
+          python3 -u controller/bridge.py --config "$config" "--$BRIDGE_OPERATION"
