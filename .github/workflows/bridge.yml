@@ -1,6 +1,8 @@
 name: Sync merged code
 
 'on':
+  push:
+    branches: ['**']
   workflow_dispatch:
     inputs:
       operation:
