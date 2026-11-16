@@ -72,6 +72,9 @@ jobs:
           print(f'Email endpoint returned {len(rows)} address records, {len(confirmed)} confirmed, {unconfirmed} pending or unconfirmed')
           preferred = profile.get('email')
           print(f'The authenticated profile exposes a preferred email: {bool(preferred)}')
+          matches = sorted(key for key, value in profile.items()
+                           if isinstance(value, str) and value == config['email'])
+          print(f'Authenticated alias match fields: {matches}')
           if config['email'] in confirmed:
               selected = config['email']
           elif preferred in confirmed:
