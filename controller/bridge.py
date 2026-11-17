@@ -16,13 +16,14 @@ from git_ops import Git, MASTER_BRANCH, MASTER_REF, Remote, repository, sha
 from state_store import GitStore
 
 
-def validate_account(account, *, github=False):
+def validate_account(account, *, github=False, require_email=True):
     pattern = r'[0-9]+' if github else r'[A-Za-z0-9_-]+'
     if not isinstance(account['id'], str) or not re.fullmatch(pattern, account['id']):
         raise BridgeError('Invalid account ID in the configuration')
     if not re.fullmatch(r'[A-Za-z0-9_.-]+', account['username']):
         raise BridgeError('Invalid account username in the configuration')
-    if not github and not re.fullmatch(r'[^@<>\x00-\x20\x7f]+@[^@<>\x00-\x20\x7f]+', account['email']):
+    if not github and require_email and not re.fullmatch(
+            r'[^@<>\x00-\x20\x7f]+@[^@<>\x00-\x20\x7f]+', account['email']):
         raise BridgeError('Enter the email bound to each destination account')
 
 
@@ -40,6 +41,11 @@ def config_read(filename):
         sha(github['start_from'])
     repository(gitcode['repo'])
     validate_account(gitcode['bot'])
+    creator = gitcode.get('pr_creator')
+    if creator is not None:
+        if not isinstance(creator, dict):
+            raise BridgeError('gitcode.pr_creator must be an account object')
+        validate_account(creator, require_email=False)
 
     seen = set()
     for item in cfg['identities']:
@@ -72,9 +78,14 @@ def pull_number(pull):
 
 
 class Bridge:
-    def __init__(self, cfg, git, source_repo, bot_token, github_token=None):
+    def __init__(self, cfg, git, source_repo, bot_token, github_token=None, *, creator_token=None):
         self.cfg, self.git = cfg, git
         self.bot = cfg['gitcode']['bot']
+        configured_creator = cfg['gitcode'].get('pr_creator')
+        if bool(creator_token) != (configured_creator is not None):
+            raise BridgeError('Configure both gitcode.pr_creator and BRIDGE_PR_CREATOR_TOKEN')
+        creator = self.bot if configured_creator is None else configured_creator
+        self.pr_creator = {'id': creator['id'], 'username': creator['username']}
         self.mapping = {item['github']['id']: item['gitcode'] for item in cfg['identities']}
         self.verified_accounts = set()
         self.source = Remote('github', source_repo, github_token, 'x-access-token')
@@ -106,6 +117,13 @@ class Bridge:
         target_info = checked_repo(self.target_api)
         if target_info.get('private') not in (1, True) or target_info.get('public') in (1, True):
             raise BridgeError('The destination repository must be private')
+
+        self.creator_api = self.target_api
+        if configured_creator is not None:
+            self.creator_api = Api('gitcode', creator_token, self.target.repo)
+            creator_profile = self.creator_api.request('GET', '/user')
+            if not same_account(creator_profile, self.pr_creator):
+                raise BridgeError('The PR creator token does not belong to the configured creator')
 
         self.binding = {
             'source': [self.source.repo.casefold(), source_info['id'], self.source_ref],
@@ -159,18 +177,22 @@ class Bridge:
 
     def finish_pull(self, store, progress, *, resume=False):
         pending = progress['pending']
+        creator = pending.get('creator', self.bot)
         number = pending.get('number')
         branch = pending['branch']
         label, source_url = self.source_link(pending, progress['cursor'])
         source_line = f'- [{label}]({source_url})'
         if number is None and resume:
-            for row in self.target_api.pages('/pulls', state='all', base=MASTER_BRANCH, author=self.bot['username']):
+            for row in self.target_api.pages('/pulls', state='all', base=MASTER_BRANCH, author=creator['username']):
                 if (row.get('head') or {}).get('ref') == branch:
                     if number is not None:
                         raise BridgeError('Multiple destination PRs use the pending sync branch')
                     number = pull_number(row)
         if number is None:
-            created = self.target_api.call('POST', '/pulls', {
+            if (creator['id'] != self.pr_creator['id']
+                    or creator['username'].casefold() != self.pr_creator['username'].casefold()):
+                raise BridgeError('Restore the pending PR creator before creating the missing destination PR')
+            created = self.creator_api.call('POST', '/pulls', {
                 'title': f'同步 {label}',
                 'head': branch,
                 'base': MASTER_BRANCH,
@@ -183,15 +205,15 @@ class Bridge:
             })
             number = pull_number(created)
         number = pull_number({'number': number})
-        store.save({**progress, 'pending': {**pending, 'number': number}})
         path = f'/pulls/{number}'
         pull = self.target_api.call('GET', path)
         head = pull.get('head') or {}
         merged = pull.get('state') == 'merged' or bool(pull.get('merged_at'))
-        if (not same_account(pull.get('user') or {}, self.bot)
+        if (not same_account(pull.get('user') or {}, creator)
                 or (pull.get('base') or {}).get('ref') != MASTER_BRANCH
                 or (not merged and (head.get('ref') != branch or head.get('sha') != pending['head']))):
             raise BridgeError('The destination PR does not match the prepared import')
+        store.save({**progress, 'pending': {**pending, 'number': number}})
         if not merged and pull.get('state') not in ('open', 'opened', 'reopen', 'reopened'):
             raise BridgeError('The destination PR is closed. Reopen it before rerunning the workflow.')
 
@@ -280,7 +302,8 @@ class Bridge:
             branch = f'bridge/github-{cursor[:12]}-{head[:20]}'
             self.git.transfer_lfs(self.source, self.target, cursor)
             self.git.stage(self.target, branch, head)
-            pending = {'source': cursor, 'head': head, 'branch': branch, 'github_pull': github_pull}
+            pending = {'source': cursor, 'head': head, 'branch': branch, 'github_pull': github_pull,
+                       'creator': self.pr_creator}
             progress = {**progress, 'pending': pending}
             store.save(progress)
             master = self.finish_pull(store, progress)
@@ -307,7 +330,8 @@ def main():
     with TemporaryDirectory(prefix='bridge-') as directory:
         root = Path(directory)
         bridge = Bridge(cfg, Git(root / 'import', cfg['lfs']), args.source_repo, bot_token,
-                        os.environ.get('BRIDGE_SOURCE_READ_TOKEN'))
+                        os.environ.get('BRIDGE_SOURCE_READ_TOKEN'),
+                        creator_token=os.environ.get('BRIDGE_PR_CREATOR_TOKEN'))
         store = GitStore(Git(root / 'state'), bridge.target, bridge.binding, bridge.bot)
         bridge.run(store, check=args.check)
 
