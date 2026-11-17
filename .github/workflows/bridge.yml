@@ -38,6 +38,7 @@ jobs:
           BRIDGE_OPERATION: ${{ github.event_name == 'push' && 'apply' || inputs.operation }}
           BRIDGE_CONFIG_JSON: ${{ secrets.BRIDGE_CONFIG_JSON }}
           BRIDGE_TARGET_TOKEN: ${{ secrets.BRIDGE_TARGET_TOKEN }}
+          BRIDGE_PR_CREATOR_TOKEN: ${{ secrets.BRIDGE_PR_CREATOR_TOKEN }}
           BRIDGE_SOURCE_READ_TOKEN: ${{ github.token }}
         run: |
           set -eu
