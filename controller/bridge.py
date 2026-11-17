@@ -250,7 +250,7 @@ class Bridge:
         head = master
         for commit in commits:
             author = self.author(commit)
-            head = self.git.rebuild(commit, head, author, self.bot)
+            head = self.git.rebuild(commit, head, author)
             if preview:
                 print(f'{commit} | {"bot" if author is self.bot else "mapped"}')
         return head

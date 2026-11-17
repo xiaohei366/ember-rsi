@@ -95,7 +95,7 @@ class Git:
                 raise BridgeError('GitHub default branch no longer has the recorded first-parent history') from None
         return list(reversed(history))
 
-    def rebuild(self, source, parent, author, bot):
+    def rebuild(self, source, parent, account):
         raw = self.run('cat-file', 'commit', sha(source), binary=True).stdout
         headers, separator, message = raw.partition(b'\n\n')
         if not separator:
@@ -113,13 +113,13 @@ class Git:
             if result.returncode:
                 raise BridgeError(f'Destination master conflicts with source commit {source}')
         tree = sha(self.run('write-tree').stdout.strip())
+        identity = f'{account["username"]} <{account["email"]}>'.encode('utf-8')
         identities = []
-        for field, account in ((b'author', author), (b'committer', bot)):
+        for field in (b'author', b'committer'):
             original = next((line for line in lines if line.startswith(field + b' ')), b'')
             date = re.search(rb' (-?[0-9]+ [+-][0-9]{4})$', original)
             if not date:
                 raise BridgeError(f'Missing valid {field.decode("ascii")} date in source commit {source}')
-            identity = f'{account["username"]} <{account["email"]}>'.encode('utf-8')
             identities.append(field + b' ' + identity + b' ' + date.group(1))
         new_headers = [f'tree {tree}'.encode('ascii'), f'parent {parent}'.encode('ascii'), *identities]
         new_headers.extend(line for line in lines if line.startswith(b'encoding '))
