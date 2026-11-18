@@ -71,17 +71,6 @@ def exact_line(comment, source_files, target_files):
     return line in source[1] and line in target[1] and source[1][line] == target[1][line]
 
 
-def matches(note, intent):
-    actor = note.get('user') or {}
-    position = note.get('diff_position') or {}
-    payload = intent['payload']
-    line = payload['position']
-    return (same_account(actor, intent['account'])
-            and note.get('body') == payload['body'] and note.get('diff_file') == payload['path']
-            and position.get('position_type', 'text') == 'text'
-            and position.get('end_new_line') == line and position.get('start_new_line') in (None, line))
-
-
 class CommentDelivery:
     """Keep a write intent and the verified destination note ID outside comment text."""
 
@@ -106,11 +95,25 @@ class CommentDelivery:
         matches_found = []
         before = set(intent['before'])
         handle = intent.get('handle')
+        payload = intent['payload']
+        line = payload['position']
         for note in notes:
             note_id = str(note['id'])
-            if note_id in before or not matches(note, intent):
+            if note_id in before or (handle and handle not in (note_id, str(note.get('discussion_id')))):
                 continue
-            if not handle or handle in (note_id, str(note.get('discussion_id'))):
+            span = note.get('diff_position') or {}
+            if (note.get('body') != payload['body'] or not same_account(note.get('user') or {}, intent['account'])
+                    or span.get('end_new_line') != line or span.get('start_new_line') not in (None, line)):
+                continue
+            if not re.fullmatch(r'[1-9][0-9]*', note_id):
+                raise BridgeError('Destination returned an invalid inline note ID')
+            # The list supplies the mapped account ID. The detail supplies the path and head SHA.
+            detail = self.bridge.target_api.call('GET', '/pulls/comments/' + note_id)
+            pos = detail.get('position') or {}
+            if (str(detail.get('id')) == note_id and detail.get('discussion_id') == note.get('discussion_id')
+                    and detail.get('body') == payload['body'] and not detail.get('is_outdated')
+                    and pos.get('position_type') == 'text' and pos.get('new_path') == payload['path']
+                    and pos.get('new_line') == line and pos.get('head_sha') == self.store.progress['pending']['head']):
                 matches_found.append(note_id)
         if len(matches_found) > 1:
             raise BridgeError('Ambiguous inline comment receipt. Check the private pending record before retrying.')
