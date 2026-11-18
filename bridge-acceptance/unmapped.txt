@@ -1,3 +1,4 @@
 GitHub → GitCode v4 acceptance: unmapped source author.
 Verify that the configured PR creator is used for an unmapped GitHub author.
 Verify both commit headers for an unmapped author inside a normal merge.
+The imported author and committer must both use the fallback bot's name and email.
