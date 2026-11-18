@@ -41,8 +41,8 @@ class Git:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.askpass = self.directory / 'askpass'
         self.askpass.write_text('#!/bin/sh\ncase "$1" in\n'
-                                '*Username*) printf "%s\\n" "$BRIDGE_GIT_USERNAME" ;;\n'
-                                '*Password*) printf "%s\\n" "$BRIDGE_GIT_TOKEN" ;;\n'
+                                '*Username*) printf "%s\\n" "$SYNC_GIT_HTTPS_USERNAME" ;;\n'
+                                '*Password*) printf "%s\\n" "$SYNC_GIT_HTTPS_TOKEN" ;;\n'
                                 '*) exit 1 ;;\nesac\n')
         self.askpass.chmod(0o700)
         self.run('init', '--bare', '--quiet')
@@ -51,8 +51,8 @@ class Git:
         env = {'PATH': os.environ['PATH'], 'LANG': 'C', 'GIT_CONFIG_NOSYSTEM': '1',
                'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_TERMINAL_PROMPT': '0'}
         if remote and remote.token:
-            env.update(GIT_ASKPASS=str(self.askpass), BRIDGE_GIT_USERNAME=remote.username,
-                       BRIDGE_GIT_TOKEN=remote.token)
+            env.update(GIT_ASKPASS=str(self.askpass), SYNC_GIT_HTTPS_USERNAME=remote.username,
+                       SYNC_GIT_HTTPS_TOKEN=remote.token)
         try:
             result = subprocess.run(['git', '-c', 'credential.helper=', '-c', 'core.hooksPath=/dev/null',
                                      '-c', 'http.followRedirects=false', '-c', 'http.lowSpeedLimit=100',

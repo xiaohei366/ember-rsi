@@ -36,21 +36,21 @@ jobs:
 
       - name: Apply the selected operation
         env:
-          BRIDGE_OPERATION: ${{ github.event_name == 'push' && 'apply' || inputs.operation }}
-          BRIDGE_CONFIG_JSON: ${{ secrets.BRIDGE_CONFIG_JSON }}
-          BRIDGE_TARGET_TOKEN: ${{ secrets.BRIDGE_TARGET_TOKEN }}
-          BRIDGE_PR_CREATOR_TOKEN: ${{ secrets.BRIDGE_PR_CREATOR_TOKEN }}
-          BRIDGE_PR_CREATOR_TOKEN_2: ${{ secrets.BRIDGE_PR_CREATOR_TOKEN_2 }}
-          BRIDGE_SOURCE_READ_TOKEN: ${{ github.token }}
+          GITCODE_SYNC_MODE: ${{ github.event_name == 'push' && 'apply' || inputs.operation }}
+          GITCODE_SYNC_CONFIG_JSON: ${{ secrets.GITCODE_SYNC_CONFIG_JSON }}
+          GITCODE_REBOT_TOKEN: ${{ secrets.GITCODE_REBOT_TOKEN }}
+          GITCODE_MEMBER_1_TOKEN: ${{ secrets.GITCODE_MEMBER_1_TOKEN }}
+          GITCODE_MEMBER_2_TOKEN: ${{ secrets.GITCODE_MEMBER_2_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -eu
           umask 077
-          : "${BRIDGE_CONFIG_JSON:?Set the bridge configuration secret}"
+          : "${GITCODE_SYNC_CONFIG_JSON:?Set GITCODE_SYNC_CONFIG_JSON in the gitcode-sync environment}"
           config="$(mktemp)"
           trap 'rm -f "$config"' EXIT
-          printf '%s\n' "$BRIDGE_CONFIG_JSON" > "$config"
-          case "$BRIDGE_OPERATION" in
+          printf '%s\n' "$GITCODE_SYNC_CONFIG_JSON" > "$config"
+          case "$GITCODE_SYNC_MODE" in
             check|apply) ;;
-            *) echo 'Unsupported bridge operation' >&2; exit 1 ;;
+            *) echo 'GITCODE_SYNC_MODE must be check or apply' >&2; exit 1 ;;
           esac
-          python3 -u controller/bridge.py --config "$config" "--$BRIDGE_OPERATION"
+          python3 -u controller/bridge.py --config "$config" "--$GITCODE_SYNC_MODE"

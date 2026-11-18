@@ -17,8 +17,19 @@ from review_comments import CommentDelivery, first_comments
 from state_store import GitStore
 
 
-DEFAULT_MEMBER_SECRET = 'BRIDGE_PR_CREATOR_TOKEN'
-MEMBER_SECRET_NAME = re.compile(r'BRIDGE_PR_CREATOR_TOKEN(?:_[1-9][0-9]*)?')
+DEFAULT_MEMBER_SECRET = 'GITCODE_MEMBER_1_TOKEN'
+MEMBER_SECRET_NAME = re.compile(r'GITCODE_MEMBER_[1-9][0-9]*_TOKEN')
+
+
+def member_secret_name(value):
+    if isinstance(value, str):
+        if MEMBER_SECRET_NAME.fullmatch(value):
+            return value
+        # Stored schema 4 mappings may still name the member's previous slot.
+        old_slot = re.fullmatch(r'BRIDGE_PR_CREATOR_TOKEN(?:_([1-9][0-9]*))?', value)
+        if old_slot:
+            return f'GITCODE_MEMBER_{old_slot.group(1) or "1"}_TOKEN'
+    raise BridgeError('identities[].pr_token_secret must be a numbered member secret such as GITCODE_MEMBER_1_TOKEN')
 
 
 def validate_account(account, *, github=False):
@@ -55,9 +66,10 @@ def config_read(filename):
         seen.add(source)
         member_id = item['gitcode']['id']
         if member_id != gitcode['bot']['id']:
-            secret = item.get('pr_token_secret', DEFAULT_MEMBER_SECRET)
-            if not isinstance(secret, str) or not MEMBER_SECRET_NAME.fullmatch(secret):
-                raise BridgeError('identities[].pr_token_secret must be BRIDGE_PR_CREATOR_TOKEN or a numbered slot')
+            secret = DEFAULT_MEMBER_SECRET
+            if 'pr_token_secret' in item:
+                secret = member_secret_name(item['pr_token_secret'])
+                item['pr_token_secret'] = secret
             if (secret_owners.setdefault(secret, member_id) != member_id
                     or member_secrets.setdefault(member_id, secret) != secret):
                 raise BridgeError('Use one distinct pr_token_secret per mapped GitCode account')
@@ -486,15 +498,15 @@ def main():
     if not args.source_repo:
         parser.error('--source-repo is required outside GitHub Actions')
 
-    bot_token = os.environ.get('BRIDGE_TARGET_TOKEN')
+    bot_token = os.environ.get('GITCODE_REBOT_TOKEN')
     if not bot_token:
-        raise BridgeError('Missing the destination workflow secret')
+        raise BridgeError('Set GITCODE_REBOT_TOKEN in the gitcode-sync environment')
     cfg = config_read(args.config)
     with TemporaryDirectory(prefix='bridge-') as directory:
         root = Path(directory)
         member_tokens = {key: value for key, value in os.environ.items() if MEMBER_SECRET_NAME.fullmatch(key)}
         bridge = Bridge(cfg, Git(root / 'import'), args.source_repo, bot_token,
-                        os.environ.get('BRIDGE_SOURCE_READ_TOKEN'),
+                        os.environ.get('GITHUB_TOKEN'),
                         member_tokens=member_tokens)
         store = GitStore(Git(root / 'state'), bridge.target, bridge.binding, bridge.bot)
         bridge.run(store, check=args.check)
