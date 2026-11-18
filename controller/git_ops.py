@@ -35,8 +35,8 @@ class Remote:
 
 
 class Git:
-    def __init__(self, directory, lfs=False):
-        self.directory, self.lfs = Path(directory), lfs
+    def __init__(self, directory):
+        self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.askpass = self.directory / 'askpass'
         self.askpass.write_text('#!/bin/sh\ncase "$1" in\n'
@@ -48,8 +48,7 @@ class Git:
 
     def run(self, *args, remote=None, allowed=(0,), binary=False, input_data=None):
         env = {'PATH': os.environ['PATH'], 'LANG': 'C', 'GIT_CONFIG_NOSYSTEM': '1',
-               'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_TERMINAL_PROMPT': '0',
-               'GIT_LFS_SKIP_SMUDGE': '1'}
+               'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_TERMINAL_PROMPT': '0'}
         if remote and remote.token:
             env.update(GIT_ASKPASS=str(self.askpass), BRIDGE_GIT_USERNAME=remote.username,
                        BRIDGE_GIT_TOKEN=remote.token)
@@ -167,26 +166,6 @@ class Git:
         rebuilt = sha(output.stdout.strip().decode('ascii'))
         self.verify_identity(rebuilt, account)
         return rebuilt
-
-    def check_lfs(self, source_head):
-        if self.lfs:
-            self.run('lfs', 'version')
-        else:
-            attributes = self.run('log', '-p', '-m', '--format=', sha(source_head),
-                                  '--', '.gitattributes', '**/.gitattributes', binary=True).stdout
-            if re.search(rb'filter\s*=\s*lfs', attributes):
-                raise BridgeError('Git LFS attributes detected; enable lfs before importing')
-
-    def transfer_lfs(self, source, target, source_head):
-        if self.lfs:
-            if source.provider != 'github' or target.provider != 'gitcode':
-                raise BridgeError('LFS transfers must go from GitHub to GitCode')
-            for name, remote in (('lfs-source', source), ('lfs-target', target)):
-                self.run('config', f'remote.{name}.url', remote.url)
-            self.run('-c', 'lfs.url=' + source.url + '/info/lfs', 'lfs', 'fetch', '--all', 'lfs-source',
-                     sha(source_head), remote=source)
-            self.run('-c', 'lfs.url=' + target.url + '/info/lfs', 'lfs', 'push', '--all', 'lfs-target',
-                     sha(source_head), remote=target)
 
     def stage(self, remote, branch, head):
         if remote.provider != 'gitcode' or not branch.startswith('bridge/'):
