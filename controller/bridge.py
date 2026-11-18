@@ -153,7 +153,7 @@ class Bridge:
             secret = self.member_secrets[account_id]
             token = self.member_tokens.get(secret)
             if not token:
-                raise BridgeError(f'Set {secret} for the mapped member in the bridge-sync environment')
+                raise BridgeError(f'Set {secret} for the mapped member in the gitcode-sync environment')
             api = Api('gitcode', token, self.target.repo)
             if not same_account(api.request('GET', '/user'), account):
                 raise BridgeError(f'{secret} does not belong to the mapped member')
