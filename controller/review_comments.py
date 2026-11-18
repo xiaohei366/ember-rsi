@@ -107,11 +107,11 @@ class CommentDelivery:
                 continue
             if not re.fullmatch(r'[1-9][0-9]*', note_id):
                 raise BridgeError('Destination returned an invalid inline note ID')
-            # The list identifies the discussion and its range. Its file path may be omitted.
+            # The list supplies the mapped account ID. The detail supplies the path and head SHA.
             detail = self.bridge.target_api.call('GET', '/pulls/comments/' + note_id)
             pos = detail.get('position') or {}
-            if (str(detail.get('id')) == note_id and detail.get('body') == payload['body']
-                    and same_account(detail.get('user') or {}, intent['account']) and not detail.get('is_outdated')
+            if (str(detail.get('id')) == note_id and detail.get('discussion_id') == note.get('discussion_id')
+                    and detail.get('body') == payload['body'] and not detail.get('is_outdated')
                     and pos.get('position_type') == 'text' and pos.get('new_path') == payload['path']
                     and pos.get('new_line') == line and pos.get('head_sha') == self.store.progress['pending']['head']):
                 matches_found.append(note_id)
