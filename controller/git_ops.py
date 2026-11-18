@@ -8,7 +8,8 @@ import subprocess
 from api import BridgeError
 
 
-STATE_REF = 'refs/heads/bridge-state'
+STATE_REF = 'refs/heads/gtihub-sync'
+LEGACY_STATE_REF = 'refs/heads/bridge-state'
 MASTER_BRANCH = 'master'
 MASTER_REF = 'refs/heads/' + MASTER_BRANCH
 
@@ -68,9 +69,12 @@ class Git:
         self.run('check-ref-format', ref)
         return ref
 
+    def tips(self, remote, *refs):
+        rows = self.run('ls-remote', '--refs', '--heads', remote.url, *refs, remote=remote).stdout.splitlines()
+        return {name: sha(oid) for oid, name in (row.split('\t') for row in rows) if name in refs}
+
     def tip(self, remote, ref):
-        rows = self.run('ls-remote', '--refs', '--heads', remote.url, ref, remote=remote).stdout.splitlines()
-        return next((sha(oid) for oid, name in (row.split('\t') for row in rows) if name == ref), None)
+        return self.tips(remote, ref).get(ref)
 
     def fetch(self, remote, ref, *, shallow=False):
         depth = ('--depth=1',) if shallow else ()
@@ -185,3 +189,11 @@ class Git:
         # caller builds the new state commit with the expected state as its parent.
         self.run('push', '--quiet', f'--force-with-lease={STATE_REF}:{expected or ""}', remote.url,
                  f'{sha(head)}:{STATE_REF}', remote=remote)
+
+    def rename_legacy_state(self, remote, expected):
+        if remote.provider != 'gitcode':
+            raise BridgeError('Only the destination can receive checkpoints')
+        tip = sha(expected)
+        self.run('push', '--quiet', '--atomic', f'--force-with-lease={LEGACY_STATE_REF}:{tip}',
+                 f'--force-with-lease={STATE_REF}:', remote.url, f'{tip}:{STATE_REF}',
+                 f':{LEGACY_STATE_REF}', remote=remote)
