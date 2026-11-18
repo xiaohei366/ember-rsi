@@ -87,16 +87,14 @@ class Git:
         return self.run('merge-base', '--is-ancestor', sha(earlier), sha(later),
                         allowed=(0, 1, 128)).returncode == 0
 
-    def first_parent_range(self, head, cursor):
-        if head == cursor:
+    def first_parent_range(self, after, before):
+        if sha(after) == sha(before):
             return []
-        history = self.run('rev-list', '--first-parent', sha(head)).stdout.splitlines()
-        if cursor:
-            try:
-                history = history[:history.index(sha(cursor))]
-            except ValueError:
-                raise BridgeError('GitHub default branch no longer has the recorded first-parent history') from None
-        return list(reversed(history))
+        if self.is_ancestor(before, after):
+            commits = self.run('rev-list', '--first-parent', '--reverse', f'{before}..{after}').stdout.splitlines()
+            if commits and self.run('show', '-s', '--format=%P', commits[0]).stdout.split()[:1] == [before]:
+                return commits
+        raise BridgeError('Push before is not on the first-parent history of after')
 
     def tree(self, commit):
         return sha(self.run('rev-parse', sha(commit) + '^{tree}').stdout.strip())

@@ -17,63 +17,97 @@ from review_comments import CommentDelivery, first_comments
 from state_store import GitStore
 
 
-DEFAULT_MEMBER_SECRET = 'GITCODE_MEMBER_1_TOKEN'
 MEMBER_SECRET_NAME = re.compile(r'GITCODE_MEMBER_[1-9][0-9]*_TOKEN')
+DEFAULT_MEMBERS_FILE = Path(__file__).resolve().parents[1] / '.github' / 'gitcode-members.json'
+EMAIL = re.compile(r'[^@<>\x00-\x20\x7f]+@[^@<>\x00-\x20\x7f]+')
+ZERO_SHA = '0' * 40
 
 
-def member_secret_name(value):
-    if isinstance(value, str):
-        if MEMBER_SECRET_NAME.fullmatch(value):
-            return value
-        # Stored schema 4 mappings may still name the member's previous slot.
-        old_slot = re.fullmatch(r'BRIDGE_PR_CREATOR_TOKEN(?:_([1-9][0-9]*))?', value)
-        if old_slot:
-            return f'GITCODE_MEMBER_{old_slot.group(1) or "1"}_TOKEN'
-    raise BridgeError('identities[].pr_token_secret must be a numbered member secret such as GITCODE_MEMBER_1_TOKEN')
-
-
-def validate_account(account, *, github=False):
+def validate_account(account, *, github=False, bot=False):
+    fields = {'id', 'username', 'email'} if bot else {'id', 'username'}
+    if not isinstance(account, dict) or set(account) != fields:
+        raise BridgeError('Account fields must be id and username, plus email only for the private bot')
     pattern = r'[0-9]+' if github else r'[A-Za-z0-9_-]+'
     if not isinstance(account['id'], str) or not re.fullmatch(pattern, account['id']):
         raise BridgeError('Invalid account ID in the configuration')
-    if not re.fullmatch(r'[A-Za-z0-9_.-]+', account['username']):
+    if not isinstance(account['username'], str) or not re.fullmatch(r'[A-Za-z0-9_.-]+', account['username']):
         raise BridgeError('Invalid account username in the configuration')
-    if not github and not re.fullmatch(
-            r'[^@<>\x00-\x20\x7f]+@[^@<>\x00-\x20\x7f]+', account['email']):
-        raise BridgeError('Enter the email bound to each destination account')
+    if bot and not (isinstance(account['email'], str) and EMAIL.fullmatch(account['email'])):
+        raise BridgeError('Enter the email bound to the destination bot')
 
 
-def config_read(filename):
+def config_read(filename, members_file=DEFAULT_MEMBERS_FILE):
     cfg = json.loads(Path(filename).read_text(encoding='utf-8'))
-    if cfg.get('schema') != 4:
-        raise BridgeError('Expected schema 4')
-    if not isinstance(cfg.setdefault('identities', []), list):
-        raise BridgeError('identities must be an array')
-
-    github, gitcode = cfg['github'], cfg['gitcode']
-    if github.get('start_from') is not None:
-        sha(github['start_from'])
+    if not isinstance(cfg, dict) or set(cfg) != {'gitcode'} or not isinstance(cfg['gitcode'], dict):
+        raise BridgeError('GITCODE_SYNC_CONFIG_JSON must contain only gitcode with repo and bot')
+    gitcode = cfg['gitcode']
+    if set(gitcode) != {'repo', 'bot'}:
+        raise BridgeError('Expected gitcode.repo and gitcode.bot in GITCODE_SYNC_CONFIG_JSON')
     repository(gitcode['repo'])
-    validate_account(gitcode['bot'])
+    validate_account(gitcode['bot'], bot=True)
+    members = json.loads(Path(members_file).read_text(encoding='utf-8'))
+    if not isinstance(members, list):
+        raise BridgeError('The member mapping must be a JSON array')
     seen = set()
     secret_owners, member_secrets = {}, {}
-    for item in cfg['identities']:
+    for item in members:
+        if not isinstance(item, dict) or set(item) != {'github', 'gitcode', 'pr_token_secret'}:
+            raise BridgeError('Each member mapping requires github, gitcode and pr_token_secret')
         validate_account(item['github'], github=True)
         validate_account(item['gitcode'])
-        source = item['github']['id']
+        source, member_id = item['github']['id'], item['gitcode']['id']
         if source in seen:
             raise BridgeError('Duplicate GitHub account ID in the mapping')
         seen.add(source)
-        member_id = item['gitcode']['id']
-        if member_id != gitcode['bot']['id']:
-            secret = DEFAULT_MEMBER_SECRET
-            if 'pr_token_secret' in item:
-                secret = member_secret_name(item['pr_token_secret'])
-                item['pr_token_secret'] = secret
-            if (secret_owners.setdefault(secret, member_id) != member_id
-                    or member_secrets.setdefault(member_id, secret) != secret):
-                raise BridgeError('Use one distinct pr_token_secret per mapped GitCode account')
-    return cfg
+        secret = item['pr_token_secret']
+        if (not isinstance(secret, str) or not MEMBER_SECRET_NAME.fullmatch(secret)
+                or secret_owners.setdefault(secret, member_id) != member_id
+                or member_secrets.setdefault(member_id, secret) != secret):
+            raise BridgeError('Use one distinct numbered pr_token_secret per mapped GitCode account')
+        if member_id == gitcode['bot']['id']:
+            raise BridgeError('The bot is the fallback and must not be a member mapping')
+    return {'gitcode': gitcode, 'members': members}
+
+
+def workflow_range():
+    """A rerun reads the original event file and checkout revision."""
+    event_name = os.environ['GITHUB_EVENT_NAME']
+    after = sha(os.environ['GITHUB_SHA'])
+    if event_name == 'workflow_dispatch':
+        return None, after
+    if event_name != 'push':
+        raise BridgeError('Expected a push or workflow_dispatch event')
+    event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
+    if event['ref'] != os.environ['GITHUB_REF'] or event['after'] != after or event.get('deleted'):
+        raise BridgeError('Push ref and after must match the checked-out revision')
+    if event.get('forced'):
+        raise BridgeError('A forced default branch update requires manual reconciliation')
+    before = sha(event['before'])
+    if (before == ZERO_SHA) != (event.get('created') is True) or after == ZERO_SHA:
+        raise BridgeError('Invalid push boundaries')
+    return (None if before == ZERO_SHA else before), after
+
+
+def commit_email(api, profile, configured=None):
+    address = profile.get('email')
+    if (isinstance(address, str) and EMAIL.fullmatch(address)
+            and address.rpartition('@')[2].casefold() == 'noreply.gitcode.com'
+            and (configured is None or configured == address)):
+        return address
+    rows = api.request('GET', '/emails')
+    if isinstance(rows, dict):
+        rows = [rows]
+    confirmed = {row['email'] for row in rows if row.get('state') == 'confirmed'
+                 and isinstance(row.get('email'), str) and EMAIL.fullmatch(row['email'])}
+    if configured is not None:
+        if configured in confirmed:
+            return configured
+        raise BridgeError('The configured bot email must be confirmed or match its GitCode-issued noreply address')
+    if address in confirmed:
+        return address
+    if len(confirmed) == 1:
+        return next(iter(confirmed))
+    raise BridgeError('Select a confirmed email or the GitCode noreply address on the mapped member profile')
 
 
 def checked_repo(api):
@@ -93,14 +127,15 @@ def pull_number(pull):
 
 class Bridge:
     def __init__(self, cfg, git, source_repo, bot_token, github_token=None, *, member_tokens=None):
-        self.cfg, self.git = cfg, git
+        self.git = git
         self.bot = cfg['gitcode']['bot']
-        self.mapping = {item['github']['id']: item['gitcode'] for item in cfg['identities']}
-        self.member_secrets = {item['gitcode']['id']: item.get('pr_token_secret', DEFAULT_MEMBER_SECRET)
-                               for item in cfg['identities']}
+        self.mapping = {item['github']['id']: item['gitcode'] for item in cfg['members']}
+        self.member_secrets = {item['gitcode']['id']: item['pr_token_secret']
+                               for item in cfg['members']}
         self.member_tokens = member_tokens or {}
         self.member_apis = {}
         self.verified_accounts = set()
+        self.member_emails = {}
         self.source = Remote('github', source_repo, github_token, 'x-access-token')
         self.github_api = Api('github', github_token, self.source.repo)
         source_info = checked_repo(self.github_api)
@@ -116,17 +151,7 @@ class Bridge:
         profile = self.target_api.request('GET', '/user')
         if not same_account(profile, self.bot):
             raise BridgeError('The destination token does not belong to the configured bot')
-        email = self.bot['email']
-        authenticated_alias = (email.rpartition('@')[2].casefold() == 'noreply.gitcode.com'
-                               and profile.get('email') == email)
-        if not authenticated_alias:
-            emails = self.target_api.request('GET', '/emails')
-            if isinstance(emails, dict):
-                emails = [emails]
-            if not isinstance(emails, list) or not any(
-                    item.get('email') == email and item.get('state') == 'confirmed' for item in emails):
-                raise BridgeError('The configured bot email must be confirmed on the destination account '
-                                  'or match its GitCode-issued noreply address')
+        commit_email(self.target_api, profile, self.bot['email'])
         target_info = checked_repo(self.target_api)
         if target_info.get('private') not in (1, True) or target_info.get('public') in (1, True):
             raise BridgeError('The destination repository must be private')
@@ -155,7 +180,12 @@ class Bridge:
         if not self.mapping:
             return self.bot
         source_commit = self.github_api.call('GET', '/commits/' + sha(commit))
-        return self.mapped_account(source_commit.get('author'))
+        account = self.mapped_account(source_commit.get('author'))
+        if account is self.bot:
+            return account
+        if account['id'] not in self.member_emails:
+            self.account_api(account)
+        return {**account, 'email': self.member_emails[account['id']]}
 
     def account_api(self, account):
         account_id = account['id']
@@ -167,8 +197,10 @@ class Bridge:
             if not token:
                 raise BridgeError(f'Set {secret} for the mapped member in the gitcode-sync environment')
             api = Api('gitcode', token, self.target.repo)
-            if not same_account(api.request('GET', '/user'), account):
+            profile = api.request('GET', '/user')
+            if not same_account(profile, account):
                 raise BridgeError(f'{secret} does not belong to the mapped member')
+            self.member_emails[account_id] = commit_email(api, profile)
             self.member_apis[account_id] = api
         return self.member_apis[account_id]
 
@@ -188,7 +220,7 @@ class Bridge:
             raise BridgeError(f'GitHub returned multiple source PRs for commit {commit}')
         return next(iter(matches), None)
 
-    def source_link(self, pending, cursor):
+    def source_link(self, pending):
         repo_url = f'https://github.com/{self.source.repo}'
         if pending.get('alignment'):
             source = sha(pending['source'])
@@ -198,8 +230,8 @@ class Bridge:
             number = pull_number({'number': github_pull})
             return f'GitHub PR #{number}', f'{repo_url}/pull/{number}'
         source = sha(pending['source'])
-        if cursor:
-            return 'GitHub 变更', f'{repo_url}/compare/{sha(cursor)}...{source}'
+        if pending.get('previous'):
+            return 'GitHub 变更', f'{repo_url}/compare/{sha(pending["previous"])}...{source}'
         return 'GitHub 提交', f'{repo_url}/commit/{source}'
 
     def source_pr(self, number):
@@ -237,7 +269,7 @@ class Bridge:
         pending = progress['pending']
         creator = pending.get('creator', self.bot)
         branch = pending['branch']
-        label, source_url = self.source_link(pending, progress['cursor'])
+        label, source_url = self.source_link(pending)
         source_link = f'[{label}]({source_url})'
         title = original['title'] if original is not None else f'同步 {label}'
         description = (original['body'] or '') if original is not None else ''
@@ -330,7 +362,7 @@ class Bridge:
             message = f'Align master to GitHub {source}\n'
             return self.git.rebuild(source, [master], self.bot, maintenance_message=message), 0
 
-        # The cursor is first-parent; the commits introduced by a normal merge
+        # Each push follows the first-parent chain. Commits introduced by a merge
         # also include its topic branches. Translate those parents before the merge.
         base, graph = self.git.introduced_commits(commits[0], commits[-1])
         translated = {base: master} if base else {}
@@ -339,7 +371,7 @@ class Bridge:
             for parent in parents:
                 if parent in translated:
                     continue
-                # A topic may have branched before the cursor. Preserve the true
+                # A topic may have branched before this batch. Preserve the true
                 # parent tree so its first author's diff excludes unrelated changes.
                 if existing_trees is None:
                     existing_trees = self.git.history_by_tree(master)
@@ -357,8 +389,8 @@ class Bridge:
                 print(f'{commit} | {"bot" if author is self.bot else "mapped"}')
         return translated[commits[-1]], len(graph)
 
-    def import_batch(self, store, progress, batch, master, github_pull, *, check, alignment=False):
-        cursor = batch[-1]
+    def import_batch(self, store, progress, batch, master, github_pull, *, previous, check, alignment=False):
+        source = batch[-1]
         original = self.source_pr(github_pull)
         creator = self.pr_creator(original)
         self.account_api(creator)
@@ -372,20 +404,22 @@ class Bridge:
                 print(f'REVIEW preview | {len(roots)} candidate roots, {skipped} without a supported line, '
                       f'{replies} replies ignored')
             return head, count
-        branch = f'bridge/github-{cursor[:12]}-{head[:20]}'
-        self.git.stage(self.target, branch, head)
-        pending = {'source': cursor, 'head': head, 'branch': branch, 'github_pull': github_pull,
+        branch = f'bridge/github-{source[:12]}-{head[:20]}'
+        pending = {'source': source, 'previous': previous, 'head': head, 'branch': branch, 'github_pull': github_pull,
                    'creator': creator, 'alignment': alignment, 'base': master}
+        pending['member_emails'] = dict(self.member_emails)
         progress = {**progress, 'pending': pending}
         store.save(progress)
+        self.git.stage(self.target, branch, head)
         return self.finish_pull(store, progress, original), count
 
-    def resume(self, store, progress, commits, master, *, check):
-        """Return source cursor, target head, consumed first-parent entries and imported commit count."""
+    def resume(self, store, progress, commits, previous, master, *, check):
+        """Recover only the pending PR belonging to this event."""
         pending = progress['pending']
         source = pending['source']
         alignment = pending.get('alignment', False)
-        if alignment and source == progress['cursor']:
+        self.member_emails.update(pending.get('member_emails', {}))
+        if alignment and source == previous:
             consumed = 0
         elif source in commits:
             consumed = commits.index(source) + 1
@@ -398,7 +432,7 @@ class Bridge:
                 if number is not None:
                     path, _ = self.prepare_pull(store, progress, number, self.source_pr(pending['github_pull']))
                     CommentDelivery(self, store, path).recover()
-            return source, master, consumed, 0
+            return master, consumed, 0
         if 'branch' in pending:
             batch = [source] if alignment else commits[:consumed]
             expected, count = self.rebuild(batch, master, preview=check, alignment=alignment)
@@ -418,15 +452,16 @@ class Bridge:
                     progress = dict(progress, pending=pending)
                     number = self.pending_number(pending)
                     if not check:
-                        self.git.stage(self.target, pending['branch'], expected)
                         store.save(progress)
                 if check:
                     if self.git.tip(self.target, self.git.branch_ref(pending['branch'])) != expected:
                         raise BridgeError('The destination sync branch differs from the prepared commits')
                     master = expected
                 else:
+                    if number is None:
+                        self.git.stage(self.target, pending['branch'], expected)
                     master = self.finish_pull(store, progress, original, number)
-                return source, master, consumed, count
+                return master, consumed, count
             # An older controller or a newly changed master can leave a staged PR
             # with the wrong tree or identity. Never merge it as a recovery step.
             if number is not None:
@@ -436,60 +471,99 @@ class Bridge:
                                       'and rerun to rebuild it from GitHub.')
         if not check:
             store.save({**progress, 'pending': None})
-        return progress['cursor'], master, 0, 0
+        return master, 0, 0
 
-    def run(self, store, *, check=False):
-        source_head = self.git.fetch(self.source, self.source_ref)
+    def run(self, store, before, after, *, check=False, wait_seconds=0):
+        after = sha(after)
+        if before is not None:
+            before = sha(before)
+        source_head = self.git.fetch(self.source, after)
+        if source_head != after:
+            raise BridgeError('GitHub did not return the event revision')
+        commits = self.git.first_parent_range(after, before) if before else []
+        store.select(before, after)
+        if before:
+            print(f'PUSH {before}..{after}')
+        store.wait_for_predecessor(before, timeout=wait_seconds)
         master = self.git.fetch(self.target, MASTER_REF)
-        progress = store.progress
-        if progress is None:
-            progress = {'cursor': self.cfg['github'].get('start_from'), 'master': master, 'pending': None}
-        if not self.git.is_ancestor(progress['master'], master):
-            raise BridgeError('Destination master no longer contains the last confirmed commit')
-        cursor = progress['cursor']
-        commits = self.git.first_parent_range(source_head, cursor)
         if check:
-            status = 'MATCH' if self.git.tree(master) == self.git.tree(source_head) else 'DIFF'
-            print(f'LIVE {status} against GitHub {source_head}')
+            status = 'MATCH' if self.git.tree(master) == self.git.tree(after) else 'DIFF'
+            print(f'LIVE {status} against GitHub {after}')
             for account in self.mapping.values():
                 self.verify_account(account)
                 self.account_api(account)
-        else:
+        progress = store.progress
+        if not before and not check and (progress is None or progress['done']):
+            if self.git.tip(self.source, self.source_ref) != after:
+                raise BridgeError('This manual snapshot is stale. Start a new run on the default branch.')
+        prior = store.completed(before or after)
+        for receipt in (progress, prior):
+            if receipt and not self.git.is_ancestor(receipt['master'], master):
+                raise BridgeError('Destination master no longer contains the last confirmed commit')
+        already_applied = before is not None and progress is not None and progress['done']
+        if not already_applied and any(
+                key != store.key and not receipt['done'] for key, receipt in store.events.items()):
+            raise BridgeError('Another event is unfinished. Rerun its original workflow before this one.')
+        if not before and store.events and not (prior or progress or check):
+            raise BridgeError('Run the missing default branch pushes before applying this snapshot')
+        if not check:
             store.migrate_legacy_branch()
+        if already_applied:
+            print(f'CURRENT push {before}..{after} already verified')
+            if check:
+                print('CHECK 0 source commits')
+            return
+        progress = progress or {'applied': 0, 'master': master, 'pending': None, 'done': False}
+        if before:
+            progress = dict(progress, before=before)
+        applied = progress['applied']
+        if applied > len(commits):
+            raise BridgeError('Receipt exceeds this push range')
+        previous = commits[applied - 1] if applied else (before or after)
         count = 0
         if progress['pending']:
-            cursor, master, consumed, count = self.resume(store, progress, commits, master, check=check)
-            commits = commits[consumed:]
-        # A recorded cursor is not evidence that the two file trees match. This
-        # also repairs legacy checkpoints and drift after a successful merge.
-        if cursor and self.git.tree(master) != self.git.tree(cursor):
-            added, changed, deleted = self.git.alignment_counts(master, cursor)
-            print(f'ALIGN {cursor} | add {added}, change {changed}, delete {deleted} tracked paths')
-            master, _ = self.import_batch(store, progress, [cursor], master, None, check=check, alignment=True)
-        progress = {'cursor': cursor, 'master': master, 'pending': None}
-        if not check and (store.progress is not None or not commits):
-            store.save(progress)
-        for github_pull, group in groupby(commits, key=self.source_pull):
-            batch = list(group)
-            master, imported = self.import_batch(store, progress, batch, master, github_pull, check=check)
-            count += imported
-            progress = {'cursor': batch[-1], 'master': master, 'pending': None}
+            master, consumed, count = self.resume(store, progress, commits[applied:], previous, master, check=check)
+            applied += consumed
+            previous = commits[applied - 1] if applied else (before or after)
+            progress = dict(progress, applied=applied, master=master, pending=None, done=False)
             if not check:
                 store.save(progress)
-        if self.git.tree(source_head) != self.git.tree(master):
-            raise BridgeError('Destination tree does not match the selected GitHub default branch revision')
+        if self.git.tree(master) != self.git.tree(previous):
+            added, changed, deleted = self.git.alignment_counts(master, previous)
+            print(f'ALIGN {previous} | add {added}, change {changed}, delete {deleted} tracked paths')
+            progress = dict(progress, done=False)
+            master, _ = self.import_batch(store, progress, [previous], master, None, previous=previous,
+                                          check=check, alignment=True)
+            progress = dict(progress, master=master, pending=None)
+            if not check:
+                store.save(progress)
+        for github_pull, group in groupby(commits[applied:], key=self.source_pull):
+            batch = list(group)
+            master, imported = self.import_batch(store, progress, batch, master, github_pull,
+                                                 previous=previous, check=check)
+            count += imported
+            applied += len(batch)
+            previous = batch[-1]
+            progress = dict(progress, applied=applied, master=master, pending=None)
+            if not check:
+                store.save(progress)
+        if self.git.tree(after) != self.git.tree(master):
+            raise BridgeError('Destination tree does not match the event revision')
         if check:
             print(f'CHECK {count} source commits')
-        elif count:
-            print(f'IMPORTED {count} source commits')
-            print(f'VERIFIED master tree matches GitHub {source_head}')
         else:
-            print('CURRENT destination tree matches the GitHub default branch')
+            store.save(dict(progress, master=master, done=True))
+            if count:
+                print(f'IMPORTED {count} source commits')
+            else:
+                print('CURRENT destination tree matches the selected GitHub revision')
+            print(f'VERIFIED master tree matches GitHub {after}')
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='bridge.json')
+    parser.add_argument('--members', default=DEFAULT_MEMBERS_FILE)
     parser.add_argument('--source-repo', metavar='OWNER/REPO', default=os.environ.get('GITHUB_REPOSITORY'))
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--check', action='store_true', help='Preview the import without remote writes')
@@ -501,7 +575,7 @@ def main():
     bot_token = os.environ.get('GITCODE_REBOT_TOKEN')
     if not bot_token:
         raise BridgeError('Set GITCODE_REBOT_TOKEN in the gitcode-sync environment')
-    cfg = config_read(args.config)
+    cfg = config_read(args.config, args.members)
     with TemporaryDirectory(prefix='bridge-') as directory:
         root = Path(directory)
         member_tokens = {key: value for key, value in os.environ.items() if MEMBER_SECRET_NAME.fullmatch(key)}
@@ -509,7 +583,11 @@ def main():
                         os.environ.get('GITHUB_TOKEN'),
                         member_tokens=member_tokens)
         store = GitStore(Git(root / 'state'), bridge.target, bridge.binding, bridge.bot)
-        bridge.run(store, check=args.check)
+        if os.environ.get('GITHUB_EVENT_NAME') or os.environ.get('GITHUB_ACTIONS') == 'true':
+            before, after = workflow_range()
+        else:
+            before, after = None, bridge.git.tip(bridge.source, bridge.source_ref)
+        bridge.run(store, before, after, check=args.check, wait_seconds=2400 if before else 0)
 
 
 if __name__ == '__main__':
