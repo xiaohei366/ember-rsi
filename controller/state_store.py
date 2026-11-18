@@ -19,6 +19,7 @@ class GitStore:
         self.bot = bot
         self.tip = git.tip(remote, STATE_REF)
         self.progress = None
+        self.review_comments = {}
         if self.tip is None:
             return
         if git.fetch(remote, STATE_REF, shallow=True) != self.tip:
@@ -29,15 +30,22 @@ class GitStore:
             if record['repositories'] != binding:
                 raise StateError('State branch belongs to a different bridge configuration')
             self.progress = record['progress']
+            self.review_comments = record.get('review_comments', {})
+            if not isinstance(self.review_comments, dict):
+                raise StateError('State branch has invalid review comment receipts')
             if not isinstance(self.progress, dict) or not {'cursor', 'master', 'pending'} <= self.progress.keys():
                 raise StateError('State branch is missing import progress')
         except (BridgeError, KeyError, TypeError, ValueError) as error:
             raise StateError('Could not restore private bridge state') from error
 
-    def save(self, progress):
-        if progress == self.progress:
+    def save(self, progress, *, review_comments=None):
+        reviews = self.review_comments if review_comments is None else review_comments
+        if progress == self.progress and reviews == self.review_comments:
             return
-        snapshot = json.dumps({'repositories': self.binding, 'progress': progress}, sort_keys=True)
+        record = {'repositories': self.binding, 'progress': progress}
+        if reviews:
+            record['review_comments'] = reviews
+        snapshot = json.dumps(record, sort_keys=True)
         try:
             blob = sha(self.git.run('hash-object', '-w', '--stdin', input_data=snapshot + '\n').stdout.strip())
             tree = sha(self.git.run('mktree', input_data=f'100644 blob {blob}\t{STATE_FILE}\n').stdout.strip())
@@ -50,3 +58,4 @@ class GitStore:
             raise StateError('Could not update private bridge state. Rerun the workflow.') from error
         self.tip = commit
         self.progress = progress
+        self.review_comments = reviews
