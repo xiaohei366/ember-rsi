@@ -1,12 +1,10 @@
 name: Sync merged code
 
 'on':
-  push:
-    branches: ['**']
   workflow_dispatch:
     inputs:
       operation:
-        description: Bridge operation
+        description: Preview or apply the GitHub default branch file tree
         type: choice
         default: check
         options:
