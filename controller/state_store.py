@@ -3,7 +3,7 @@
 import json
 
 from api import BridgeError
-from git_ops import STATE_REF, sha
+from git_ops import LEGACY_STATE_REF, STATE_REF, sha
 
 
 STATE_FILE = 'progress.json'
@@ -17,12 +17,16 @@ class GitStore:
     def __init__(self, git, remote, binding, bot):
         self.git, self.remote, self.binding = git, remote, binding
         self.bot = bot
-        self.tip = git.tip(remote, STATE_REF)
+        tips = git.tips(remote, STATE_REF, LEGACY_STATE_REF)
+        if STATE_REF in tips and LEGACY_STATE_REF in tips:
+            raise StateError('Both bridge-state and gtihub-sync exist. Reconcile their checkpoints before syncing.')
+        self.read_ref = LEGACY_STATE_REF if LEGACY_STATE_REF in tips else STATE_REF
+        self.tip = tips.get(self.read_ref)
         self.progress = None
         self.review_comments = {}
         if self.tip is None:
             return
-        if git.fetch(remote, STATE_REF, shallow=True) != self.tip:
+        if git.fetch(remote, self.read_ref, shallow=True) != self.tip:
             raise StateError('State branch changed during restore. Rerun the workflow.')
         try:
             raw = git.run('cat-file', 'blob', f'{self.tip}:{STATE_FILE}', binary=True).stdout
@@ -37,6 +41,15 @@ class GitStore:
                 raise StateError('State branch is missing import progress')
         except (BridgeError, KeyError, TypeError, ValueError) as error:
             raise StateError('Could not restore private bridge state') from error
+
+    def migrate_legacy_branch(self):
+        if self.read_ref == LEGACY_STATE_REF:
+            try:
+                self.git.rename_legacy_state(self.remote, self.tip)
+            except BridgeError as error:
+                raise StateError('Could not rename bridge-state to gtihub-sync. Check branch permissions and rerun.') from error
+            self.read_ref = STATE_REF
+            print('MIGRATED checkpoint branch to gtihub-sync')
 
     def save(self, progress, *, review_comments=None):
         reviews = self.review_comments if review_comments is None else review_comments

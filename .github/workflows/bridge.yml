@@ -22,6 +22,7 @@ jobs:
     timeout-minutes: 45
     environment: bridge-sync
     concurrency:
+      # Keep the same GitHub queue while the destination checkpoint branch is renamed.
       group: bridge-state
       queue: max
     permissions:

@@ -442,6 +442,8 @@ class Bridge:
             for account in self.mapping.values():
                 self.verify_account(account)
                 self.account_api(account)
+        else:
+            store.migrate_legacy_branch()
         count = 0
         if progress['pending']:
             cursor, master, consumed, count = self.resume(store, progress, commits, master, check=check)
