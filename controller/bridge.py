@@ -306,6 +306,7 @@ class Bridge:
         return self.finish_pull(store, progress), count
 
     def resume(self, store, progress, commits, master, *, check):
+        """Return source cursor, target head, consumed first-parent entries and imported commit count."""
         pending = progress['pending']
         source = pending['source']
         alignment = pending.get('alignment', False)
@@ -344,8 +345,9 @@ class Bridge:
     def run(self, store, *, check=False):
         source_head = self.git.fetch(self.source, self.source_ref)
         master = self.git.fetch(self.target, MASTER_REF)
-        progress = store.progress or {'cursor': self.cfg['github'].get('start_from'),
-                                      'master': master, 'pending': None}
+        progress = store.progress
+        if progress is None:
+            progress = {'cursor': self.cfg['github'].get('start_from'), 'master': master, 'pending': None}
         if not self.git.is_ancestor(progress['master'], master):
             raise BridgeError('Destination master no longer contains the last confirmed commit')
         cursor = progress['cursor']
