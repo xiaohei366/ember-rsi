@@ -10,8 +10,13 @@ class BridgeError(RuntimeError):
     pass
 
 
+def same_account(obj, account):
+    return str(obj.get('id')) == account['id'] and (obj.get('login') or '').casefold() == account['username'].casefold()
+
+
 class ApiError(BridgeError):
     def __init__(self, provider, code):
+        self.code = code
         super().__init__(f'{"Destination" if provider == "gitcode" else "GitHub"} API request failed (HTTP {code})')
 
 

@@ -11,8 +11,9 @@ import sys
 from tempfile import TemporaryDirectory
 from urllib.parse import quote
 
-from api import Api, ApiError, BridgeError
+from api import Api, ApiError, BridgeError, same_account
 from git_ops import Git, MASTER_BRANCH, MASTER_REF, Remote, repository, sha
+from review_comments import CommentDelivery, first_comments
 from state_store import GitStore
 
 
@@ -61,10 +62,6 @@ def config_read(filename):
                     or member_secrets.setdefault(member_id, secret) != secret):
                 raise BridgeError('Use one distinct pr_token_secret per mapped GitCode account')
     return cfg
-
-
-def same_account(obj, account):
-    return str(obj.get('id')) == account['id'] and (obj.get('login') or '').casefold() == account['username'].casefold()
 
 
 def checked_repo(api):
@@ -148,7 +145,7 @@ class Bridge:
         source_commit = self.github_api.call('GET', '/commits/' + sha(commit))
         return self.mapped_account(source_commit.get('author'))
 
-    def creator_api(self, account):
+    def account_api(self, account):
         account_id = account['id']
         if account_id == self.bot['id']:
             return self.target_api
@@ -156,10 +153,10 @@ class Bridge:
             secret = self.member_secrets[account_id]
             token = self.member_tokens.get(secret)
             if not token:
-                raise BridgeError(f'Set {secret} for the mapped PR opener in the bridge-sync environment')
+                raise BridgeError(f'Set {secret} for the mapped member in the bridge-sync environment')
             api = Api('gitcode', token, self.target.repo)
             if not same_account(api.request('GET', '/user'), account):
-                raise BridgeError(f'{secret} does not belong to the mapped PR opener')
+                raise BridgeError(f'{secret} does not belong to the mapped member')
             self.member_apis[account_id] = api
         return self.member_apis[account_id]
 
@@ -235,7 +232,7 @@ class Bridge:
         suffix = '\n\n' + description if description else ''
         draft_body = source_link + suffix if original is not None else '- ' + source_link
         if number is None:
-            created = self.creator_api(creator).call('POST', '/pulls', {
+            created = self.account_api(creator).call('POST', '/pulls', {
                 'title': title,
                 'head': branch,
                 'base': MASTER_BRANCH,
@@ -288,14 +285,19 @@ class Bridge:
                 raise BridgeError('Could not confirm the published destination PR title and Markdown description')
         return path, merged
 
+    def verify_pending_refs(self, pending):
+        if self.git.tip(self.target, self.git.branch_ref(pending['branch'])) != pending['head']:
+            raise BridgeError('The destination sync branch changed before merge')
+        if 'base' in pending and self.git.tip(self.target, MASTER_REF) != pending['base']:
+            raise BridgeError('Destination master advanced before merge. Rerun to prepare the current base.')
+
     def finish_pull(self, store, progress, original, number=None):
         pending = progress['pending']
         path, merged = self.prepare_pull(store, progress, number, original)
         if not merged:
-            if self.git.tip(self.target, self.git.branch_ref(pending['branch'])) != pending['head']:
-                raise BridgeError('The destination sync branch changed before merge')
-            if 'base' in pending and self.git.tip(self.target, MASTER_REF) != pending['base']:
-                raise BridgeError('Destination master advanced before merge. Rerun to prepare the current base.')
+            if original is not None:
+                CommentDelivery(self, store, path).run(original)
+            self.verify_pending_refs(pending)
             try:
                 self.target_api.call('PUT', path + '/merge', {
                     'merge_method': 'merge', 'squash': False, 'force_merge': False,
@@ -347,12 +349,16 @@ class Bridge:
         cursor = batch[-1]
         original = self.source_pr(github_pull)
         creator = self.pr_creator(original)
-        self.creator_api(creator)
+        self.account_api(creator)
         if original is not None:
             kind = 'bot' if creator['id'] == self.bot['id'] else 'mapped'
             print(f'GitHub PR #{github_pull} | PR creator {kind}')
         head, count = self.rebuild(batch, master, preview=check, alignment=alignment)
         if check:
+            if original is not None:
+                roots, skipped, replies = first_comments(self.github_api, github_pull)
+                print(f'REVIEW preview | {len(roots)} candidate roots, {skipped} without a supported line, '
+                      f'{replies} replies ignored')
             return head, count
         branch = f'bridge/github-{cursor[:12]}-{head[:20]}'
         self.git.stage(self.target, branch, head)
@@ -378,7 +384,8 @@ class Bridge:
             if not check and 'branch' in pending:
                 number = self.pending_number(pending)
                 if number is not None:
-                    self.prepare_pull(store, progress, number, self.source_pr(pending['github_pull']))
+                    path, _ = self.prepare_pull(store, progress, number, self.source_pr(pending['github_pull']))
+                    CommentDelivery(self, store, path).recover()
             return source, master, consumed, 0
         if 'branch' in pending:
             batch = [source] if alignment else commits[:consumed]
@@ -393,7 +400,7 @@ class Bridge:
                         if prior.get('state') != 'closed' or prior.get('merged_at'):
                             raise BridgeError('The pending PR has a different creator. Close it unmerged '
                                               'and rerun to create it with the mapped identity.')
-                    self.creator_api(creator)
+                    self.account_api(creator)
                     pending = dict(pending, creator=creator)
                     pending.pop('number', None)
                     progress = dict(progress, pending=pending)
@@ -434,7 +441,7 @@ class Bridge:
             print(f'LIVE {status} against GitHub {source_head}')
             for account in self.mapping.values():
                 self.verify_account(account)
-                self.creator_api(account)
+                self.account_api(account)
         count = 0
         if progress['pending']:
             cursor, master, consumed, count = self.resume(store, progress, commits, master, check=check)

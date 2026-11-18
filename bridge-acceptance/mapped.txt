@@ -1,3 +1,4 @@
 GitHub → GitCode v4 acceptance: conflicting source edit.
 Whitelist mapping live check for the GitHub account.
 The imported author and committer must both use the mapped account's name and email.
+Keep the reviewer and the exact line when importing a root comment.
