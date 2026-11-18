@@ -47,17 +47,7 @@ jobs:
           : "${BRIDGE_CONFIG_JSON:?Set the bridge configuration secret}"
           config="$(mktemp)"
           trap 'rm -f "$config"' EXIT
-          if jq -e '
-            .repository.full_name == "xiaohei366/ember-rsi" and .ref == "refs/heads/master" and
-            .before == "72fd7cddcc75cb80d3e8416c8fe356591760751c" and
-            (.head_commit.message | split("\n")[0]) == "[feature] Verify an unmapped source PR opener in the lab"
-          ' "$GITHUB_EVENT_PATH" >/dev/null; then
-            printf '%s\n' "$BRIDGE_CONFIG_JSON" | jq -ec 'if any(.identities[]; .github.id == "83061759")
-              then .identities |= map(select(.github.id != "83061759"))
-              else error("Expected the source test account in the saved mapping") end' > "$config"
-          else
-            printf '%s\n' "$BRIDGE_CONFIG_JSON" > "$config"
-          fi
+          printf '%s\n' "$BRIDGE_CONFIG_JSON" > "$config"
           case "$BRIDGE_OPERATION" in
             check|apply) ;;
             *) echo 'Unsupported bridge operation' >&2; exit 1 ;;
