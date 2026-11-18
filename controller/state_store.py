@@ -29,7 +29,7 @@ class GitStore:
             if record['repositories'] != binding:
                 raise StateError('State branch belongs to a different bridge configuration')
             self.progress = record['progress']
-            if not isinstance(self.progress, dict):
+            if not isinstance(self.progress, dict) or not {'cursor', 'master', 'pending'} <= self.progress.keys():
                 raise StateError('State branch is missing import progress')
         except (BridgeError, KeyError, TypeError, ValueError) as error:
             raise StateError('Could not restore private bridge state') from error

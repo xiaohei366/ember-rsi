@@ -121,11 +121,13 @@ class Git:
         return added, len(statuses) - added - deleted, deleted
 
     def verify_identity(self, commit, account):
-        fields = self.run('show', '-s', '--no-notes', '--format=%an%x00%ae%x00%cn%x00%ce',
-                          sha(commit), binary=True).stdout.rstrip(b'\n').split(b'\0')
-        person = [account['username'].encode('utf-8'), account['email'].encode('utf-8')]
-        if fields != person + person:
-            raise BridgeError('Commit author and committer must both match the selected destination account')
+        raw = self.run('cat-file', 'commit', sha(commit), binary=True).stdout
+        headers = raw.partition(b'\n\n')[0].split(b'\n')
+        identity = f'{account["username"]} <{account["email"]}>'.encode('utf-8')
+        for field in (b'author ', b'committer '):
+            people = [line.rsplit(b' ', 2)[0] for line in headers if line.startswith(field)]
+            if people != [field + identity]:
+                raise BridgeError('Commit author and committer must both match the selected destination account')
 
     def verify_merge_identity(self, head, master, bot):
         # A fast-forward has no extra commit. A normal PR merge introduces head
