@@ -178,6 +178,17 @@ class Bridge:
             return 'GitHub 变更', f'{repo_url}/compare/{sha(cursor)}...{source}'
         return 'GitHub 提交', f'{repo_url}/commit/{source}'
 
+    def source_pr_text(self, number):
+        if number is None:
+            return None
+        number = pull_number({'number': number})
+        pull = self.github_api.call('GET', f'/pulls/{number}')
+        if (not isinstance(pull, dict) or pull_number(pull) != number
+                or not isinstance(pull.get('title'), str) or not pull['title'].strip()
+                or 'body' not in pull or (pull['body'] is not None and not isinstance(pull['body'], str))):
+            raise BridgeError('Could not read the original GitHub PR title and Markdown description')
+        return pull['title'], pull['body'] or ''
+
     def pending_number(self, pending):
         if 'number' in pending:
             return pull_number(pending)
@@ -190,21 +201,25 @@ class Bridge:
                 number = pull_number(row)
         return number
 
-    def finish_pull(self, store, progress, number=None):
+    def prepare_pull(self, store, progress, number):
         pending = progress['pending']
         creator = pending.get('creator', self.bot)
         branch = pending['branch']
         label, source_url = self.source_link(pending, progress['cursor'])
-        source_line = f'- [{label}]({source_url})'
+        source_link = f'[{label}]({source_url})'
+        original = self.source_pr_text(pending['github_pull'])
+        title, description = original if original is not None else (f'同步 {label}', '')
+        suffix = '\n\n' + description if description else ''
+        draft_body = source_link + suffix if original is not None else '- ' + source_link
         if number is None:
             if (creator['id'] != self.pr_creator['id']
                     or creator['username'].casefold() != self.pr_creator['username'].casefold()):
                 raise BridgeError('Restore the pending PR creator before creating the missing destination PR')
             created = self.creator_api.call('POST', '/pulls', {
-                'title': f'同步 {label}',
+                'title': title,
                 'head': branch,
                 'base': MASTER_BRANCH,
-                'body': source_line,
+                'body': draft_body,
                 'draft': True,
                 'squash': False,
                 'prune_source_branch': True,
@@ -226,20 +241,38 @@ class Bridge:
             raise BridgeError('The destination PR is closed. Reopen it before rerunning the workflow.')
 
         target_url = f'https://gitcode.com/{self.target.repo}/pull/{number}'
-        body = pull.get('body') or pull.get('description') or ''
-        links = [(label, source_url), (f'GitCode PR #{number}', target_url)]
-        missing = [f'- [{name}]({url})' for name, url in links if f']({url})' not in body]
-        if missing or pull.get('draft'):
+        target_link = f'[GitCode PR #{number}]({target_url})'
+        stored = pull.get('body') or pull.get('description') or ''
+        if original is not None:
+            body = f'{source_link} <-> {target_link}{suffix}'
+        else:
+            # Direct pushes and baseline alignment have no source PR text to copy.
+            body = stored
+            missing = [f'- {link}' for link, url in ((source_link, source_url), (target_link, target_url))
+                       if f']({url})' not in stored]
             if missing:
-                separator = '\n' if body == source_line else '\n\n'
+                separator = '\n' if body == draft_body else '\n\n'
                 body = (body + separator if body else '') + '\n'.join(missing)
-            updated = self.target_api.call('PATCH', path, {'body': body, 'draft': False})
-            published = (updated or {}).get('body') or ''
-            if not all(f']({url})' in published for _, url in links):
-                raise BridgeError('Could not confirm both links in the destination PR description')
 
+        if body != stored or (original is not None and pull.get('title') != title) or (not merged and pull.get('draft')):
+            fields = {'body': body}
+            if original is not None:
+                fields['title'] = title
+            if not merged:
+                fields['draft'] = False
+            self.target_api.call('PATCH', path, fields)
+            published = self.target_api.call('GET', path)
+            if ((published.get('body') or published.get('description')) != body
+                    or (original is not None and published.get('title') != title)
+                    or (not merged and published.get('draft'))):
+                raise BridgeError('Could not confirm the published destination PR title and Markdown description')
+        return path, merged
+
+    def finish_pull(self, store, progress, number=None):
+        pending = progress['pending']
+        path, merged = self.prepare_pull(store, progress, number)
         if not merged:
-            if self.git.tip(self.target, self.git.branch_ref(branch)) != pending['head']:
+            if self.git.tip(self.target, self.git.branch_ref(pending['branch'])) != pending['head']:
                 raise BridgeError('The destination sync branch changed before merge')
             if 'base' in pending and self.git.tip(self.target, MASTER_REF) != pending['base']:
                 raise BridgeError('Destination master advanced before merge. Rerun to prepare the current base.')
@@ -295,6 +328,7 @@ class Bridge:
         cursor = batch[-1]
         head, count = self.rebuild(batch, master, preview=check, alignment=alignment)
         if check:
+            self.source_pr_text(github_pull)
             return head, count
         branch = f'bridge/github-{cursor[:12]}-{head[:20]}'
         self.git.transfer_lfs(self.source, self.target, cursor)
@@ -318,6 +352,10 @@ class Bridge:
             raise BridgeError('GitHub default branch no longer contains the pending import')
         if self.git.is_ancestor(pending['head'], master):
             self.git.verify_merge_identity(pending['head'], master, self.bot)
+            if not check and 'branch' in pending:
+                number = self.pending_number(pending)
+                if number is not None:
+                    self.prepare_pull(store, progress, number)
             return source, master, consumed, 0
         if 'branch' in pending:
             batch = [source] if alignment else commits[:consumed]
