@@ -166,6 +166,9 @@ class Bridge:
 
     def source_link(self, pending, cursor):
         repo_url = f'https://github.com/{self.source.repo}'
+        if pending.get('alignment'):
+            source = sha(pending['source'])
+            return f'GitHub 基线 {source[:12]}', f'{repo_url}/commit/{source}'
         github_pull = pending['github_pull']
         if github_pull is not None:
             number = pull_number({'number': github_pull})
@@ -175,19 +178,24 @@ class Bridge:
             return 'GitHub 变更', f'{repo_url}/compare/{sha(cursor)}...{source}'
         return 'GitHub 提交', f'{repo_url}/commit/{source}'
 
-    def finish_pull(self, store, progress, *, resume=False):
+    def pending_number(self, pending):
+        if 'number' in pending:
+            return pull_number(pending)
+        creator = pending.get('creator', self.bot)
+        number = None
+        for row in self.target_api.pages('/pulls', state='all', base=MASTER_BRANCH, author=creator['username']):
+            if (row.get('head') or {}).get('ref') == pending['branch']:
+                if number is not None:
+                    raise BridgeError('Multiple destination PRs use the pending sync branch')
+                number = pull_number(row)
+        return number
+
+    def finish_pull(self, store, progress, number=None):
         pending = progress['pending']
         creator = pending.get('creator', self.bot)
-        number = pending.get('number')
         branch = pending['branch']
         label, source_url = self.source_link(pending, progress['cursor'])
         source_line = f'- [{label}]({source_url})'
-        if number is None and resume:
-            for row in self.target_api.pages('/pulls', state='all', base=MASTER_BRANCH, author=creator['username']):
-                if (row.get('head') or {}).get('ref') == branch:
-                    if number is not None:
-                        raise BridgeError('Multiple destination PRs use the pending sync branch')
-                    number = pull_number(row)
         if number is None:
             if (creator['id'] != self.pr_creator['id']
                     or creator['username'].casefold() != self.pr_creator['username'].casefold()):
@@ -233,6 +241,8 @@ class Bridge:
         if not merged:
             if self.git.tip(self.target, self.git.branch_ref(branch)) != pending['head']:
                 raise BridgeError('The destination sync branch changed before merge')
+            if 'base' in pending and self.git.tip(self.target, MASTER_REF) != pending['base']:
+                raise BridgeError('Destination master advanced before merge. Rerun to prepare the current base.')
             try:
                 self.target_api.call('PUT', path + '/merge', {
                     'merge_method': 'merge', 'squash': False, 'force_merge': False,
@@ -242,74 +252,138 @@ class Bridge:
         master = self.git.fetch(self.target, MASTER_REF)
         if not self.git.is_ancestor(pending['head'], master):
             raise BridgeError('Destination master does not contain the prepared commits after the PR merge')
+        self.git.verify_merge_identity(pending['head'], master, self.bot)
+        if self.git.tree(master) != self.git.tree(pending['source']):
+            raise BridgeError('Destination master changed during the merge. Rerun to align it to GitHub.')
         return master
 
-    def rebuild(self, commits, master, *, preview=False):
-        if commits:
-            self.git.check_lfs(commits[-1])
-        head = master
-        for commit in commits:
+    def rebuild(self, commits, master, *, preview=False, alignment=False):
+        self.git.check_lfs(commits[-1])
+        if alignment:
+            source = commits[-1]
+            message = f'Align master to GitHub {source}\n'
+            return self.git.rebuild(source, [master], self.bot, maintenance_message=message), 0
+
+        # The cursor is first-parent; the commits introduced by a normal merge
+        # also include its topic branches. Translate those parents before the merge.
+        base, graph = self.git.introduced_commits(commits[0], commits[-1])
+        translated = {base: master} if base else {}
+        existing_trees = None
+        for commit, *parents in graph:
+            for parent in parents:
+                if parent in translated:
+                    continue
+                # A topic may have branched before the cursor. Preserve the true
+                # parent tree so its first author's diff excludes unrelated changes.
+                if existing_trees is None:
+                    existing_trees = self.git.history_by_tree(master)
+                tree = self.git.tree(parent)
+                if tree not in existing_trees:
+                    message = f'Anchor imported branch at GitHub {parent}\n'
+                    existing_trees[tree] = self.git.rebuild(parent, [master], self.bot, maintenance_message=message)
+                translated[parent] = existing_trees[tree]
+            destination_parents = [translated[parent] for parent in parents]
+            if not parents and commit == commits[0]:
+                destination_parents = [master]
             author = self.author(commit)
-            head = self.git.rebuild(commit, head, author)
+            translated[commit] = self.git.rebuild(commit, destination_parents, author)
             if preview:
                 print(f'{commit} | {"bot" if author is self.bot else "mapped"}')
-        return head
+        return translated[commits[-1]], len(graph)
 
-    def remaining(self, progress, source_head, master):
-        if progress is None:
-            progress = {'cursor': self.cfg['github'].get('start_from'), 'master': master, 'pending': None}
-        if not self.git.is_ancestor(progress['master'], master):
-            raise BridgeError('Destination master no longer contains the last confirmed commit')
-        commits = self.git.first_parent_range(source_head, progress['cursor'])
+    def import_batch(self, store, progress, batch, master, github_pull, *, check, alignment=False):
+        cursor = batch[-1]
+        head, count = self.rebuild(batch, master, preview=check, alignment=alignment)
+        if check:
+            return head, count
+        branch = f'bridge/github-{cursor[:12]}-{head[:20]}'
+        self.git.transfer_lfs(self.source, self.target, cursor)
+        self.git.stage(self.target, branch, head)
+        pending = {'source': cursor, 'head': head, 'branch': branch, 'github_pull': github_pull,
+                   'creator': self.pr_creator, 'alignment': alignment, 'base': master}
+        progress = {**progress, 'pending': pending}
+        store.save(progress)
+        return self.finish_pull(store, progress), count
+
+    def resume(self, store, progress, commits, master, *, check):
         pending = progress['pending']
-        if pending is not None:
-            if pending['source'] not in commits:
-                raise BridgeError('GitHub default branch no longer contains the pending import')
-            if self.git.is_ancestor(pending['head'], master):
-                progress = {'cursor': pending['source'], 'master': master, 'pending': None}
-                commits = commits[commits.index(pending['source']) + 1:]
-        return progress, commits
+        source = pending['source']
+        alignment = pending.get('alignment', False)
+        if alignment and source == progress['cursor']:
+            consumed = 0
+        elif source in commits:
+            consumed = commits.index(source) + 1
+        else:
+            raise BridgeError('GitHub default branch no longer contains the pending import')
+        if self.git.is_ancestor(pending['head'], master):
+            self.git.verify_merge_identity(pending['head'], master, self.bot)
+            return source, master, consumed, 0
+        if 'branch' in pending:
+            batch = [source] if alignment else commits[:consumed]
+            expected, count = self.rebuild(batch, master, preview=check, alignment=alignment)
+            number = self.pending_number(pending)
+            if expected == pending['head']:
+                if check:
+                    if self.git.tip(self.target, self.git.branch_ref(pending['branch'])) != expected:
+                        raise BridgeError('The destination sync branch differs from the prepared commits')
+                    master = expected
+                else:
+                    master = self.finish_pull(store, progress, number)
+                return source, master, consumed, count
+            # An older controller or a newly changed master can leave a staged PR
+            # with the wrong tree or identity. Never merge it as a recovery step.
+            if number is not None:
+                pull = self.target_api.call('GET', f'/pulls/{number}')
+                if pull.get('state') != 'closed' or pull.get('merged_at'):
+                    raise BridgeError('The pending PR is obsolete. Close it unmerged in the destination '
+                                      'and rerun to rebuild it from GitHub.')
+        if not check:
+            store.save({**progress, 'pending': None})
+        return progress['cursor'], master, 0, 0
 
     def run(self, store, *, check=False):
         source_head = self.git.fetch(self.source, self.source_ref)
         master = self.git.fetch(self.target, MASTER_REF)
-        progress, commits = self.remaining(store.progress, source_head, master)
+        progress = store.progress or {'cursor': self.cfg['github'].get('start_from'),
+                                      'master': master, 'pending': None}
+        if not self.git.is_ancestor(progress['master'], master):
+            raise BridgeError('Destination master no longer contains the last confirmed commit')
+        cursor = progress['cursor']
+        commits = self.git.first_parent_range(source_head, cursor)
         if check:
+            status = 'MATCH' if self.git.tree(master) == self.git.tree(source_head) else 'DIFF'
+            print(f'LIVE {status} against GitHub {source_head}')
             for account in self.mapping.values():
                 self.verify_account(account)
-            self.rebuild(commits, master, preview=True)
-            print(f'CHECK {len(commits)} source commits')
-            return
-        if store.progress is not None and progress != store.progress:
+        count = 0
+        if progress['pending']:
+            cursor, master, consumed, count = self.resume(store, progress, commits, master, check=check)
+            commits = commits[consumed:]
+        # A recorded cursor is not evidence that the two file trees match. This
+        # also repairs legacy checkpoints and drift after a successful merge.
+        if cursor and self.git.tree(master) != self.git.tree(cursor):
+            added, changed, deleted = self.git.alignment_counts(master, cursor)
+            print(f'ALIGN {cursor} | add {added}, change {changed}, delete {deleted} tracked paths')
+            master, _ = self.import_batch(store, progress, [cursor], master, None, check=check, alignment=True)
+        progress = {'cursor': cursor, 'master': master, 'pending': None}
+        if not check and (store.progress is not None or not commits):
             store.save(progress)
-        if not commits:
-            store.save(progress)
-            print('CURRENT source default branch has no new commits')
-            return
-
-        count = len(commits)
-        pending = progress['pending']
-        if pending and 'branch' in pending:
-            master = self.finish_pull(store, progress, resume=True)
-            cursor = pending['source']
-            progress = {'cursor': cursor, 'master': master, 'pending': None}
-            store.save(progress)
-            commits = commits[commits.index(cursor) + 1:]
         for github_pull, group in groupby(commits, key=self.source_pull):
             batch = list(group)
-            cursor = batch[-1]
-            head = self.rebuild(batch, master)
-            branch = f'bridge/github-{cursor[:12]}-{head[:20]}'
-            self.git.transfer_lfs(self.source, self.target, cursor)
-            self.git.stage(self.target, branch, head)
-            pending = {'source': cursor, 'head': head, 'branch': branch, 'github_pull': github_pull,
-                       'creator': self.pr_creator}
-            progress = {**progress, 'pending': pending}
-            store.save(progress)
-            master = self.finish_pull(store, progress)
-            progress = {'cursor': cursor, 'master': master, 'pending': None}
-            store.save(progress)
-        print(f'IMPORTED {count} source commits')
+            master, imported = self.import_batch(store, progress, batch, master, github_pull, check=check)
+            count += imported
+            progress = {'cursor': batch[-1], 'master': master, 'pending': None}
+            if not check:
+                store.save(progress)
+        if self.git.tree(source_head) != self.git.tree(master):
+            raise BridgeError('Destination tree does not match the selected GitHub default branch revision')
+        if check:
+            print(f'CHECK {count} source commits')
+        elif count:
+            print(f'IMPORTED {count} source commits')
+            print(f'VERIFIED master tree matches GitHub {source_head}')
+        else:
+            print('CURRENT destination tree matches the GitHub default branch')
 
 
 def main():

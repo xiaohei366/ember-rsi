@@ -95,24 +95,55 @@ class Git:
                 raise BridgeError('GitHub default branch no longer has the recorded first-parent history') from None
         return list(reversed(history))
 
-    def rebuild(self, source, parent, account):
+    def tree(self, commit):
+        return sha(self.run('rev-parse', sha(commit) + '^{tree}').stdout.strip())
+
+    def introduced_commits(self, first, last):
+        parents = self.run('show', '-s', '--format=%P', sha(first)).stdout.split()
+        base = parents[0] if parents else None
+        exclude = ['^' + base] if base else []
+        rows = self.run('rev-list', '--parents', '--reverse', '--topo-order', sha(last), *exclude)
+        return base, [line.split() for line in rows.stdout.splitlines()]
+
+    def history_by_tree(self, head):
+        by_tree = {}
+        for row in self.run('log', '--format=%T %H', sha(head)).stdout.splitlines():
+            tree, commit = row.split()
+            by_tree.setdefault(tree, commit)
+        return by_tree
+
+    def alignment_counts(self, master, source):
+        changes = self.run('diff', '--no-renames', '--name-status', '-z', sha(master), sha(source),
+                           '--', binary=True).stdout
+        statuses = changes.split(b'\0')[:-1:2]
+        added = statuses.count(b'A')
+        deleted = statuses.count(b'D')
+        return added, len(statuses) - added - deleted, deleted
+
+    def verify_identity(self, commit, account):
+        fields = self.run('show', '-s', '--no-notes', '--format=%an%x00%ae%x00%cn%x00%ce',
+                          sha(commit), binary=True).stdout.rstrip(b'\n').split(b'\0')
+        person = [account['username'].encode('utf-8'), account['email'].encode('utf-8')]
+        if fields != person + person:
+            raise BridgeError('Commit author and committer must both match the selected destination account')
+
+    def verify_merge_identity(self, head, master, bot):
+        # A fast-forward has no extra commit. A normal PR merge introduces head
+        # as a secondary parent, even if master advanced again before our fetch.
+        merges = self.run('rev-list', '--first-parent', '--merges', '--parents',
+                          f'{sha(head)}..{sha(master)}').stdout.splitlines()
+        for row in merges:
+            fields = row.split()
+            if head in fields[2:]:
+                self.verify_identity(fields[0], bot)
+                break
+
+    def rebuild(self, source, parents, account, *, maintenance_message=None):
         raw = self.run('cat-file', 'commit', sha(source), binary=True).stdout
         headers, separator, message = raw.partition(b'\n\n')
         if not separator:
             raise BridgeError(f'Malformed source commit {source}')
         lines = headers.splitlines()
-        first_parent = next((line[7:].decode('ascii') for line in lines if line.startswith(b'parent ')), None)
-        if first_parent is None:
-            first_parent = self.run('mktree', input_data='').stdout.strip()
-        patch = self.run('diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv',
-                         '--no-renames', '--no-color', first_parent, source, '--', binary=True).stdout
-        self.run('read-tree', sha(parent))
-        if patch:
-            result = self.run('apply', '--cached', '--3way', '--whitespace=nowarn', binary=True,
-                              input_data=patch, allowed=(0, 1))
-            if result.returncode:
-                raise BridgeError(f'Destination master conflicts with source commit {source}')
-        tree = sha(self.run('write-tree').stdout.strip())
         identity = f'{account["username"]} <{account["email"]}>'.encode('utf-8')
         identities = []
         for field in (b'author', b'committer'):
@@ -121,11 +152,19 @@ class Git:
             if not date:
                 raise BridgeError(f'Missing valid {field.decode("ascii")} date in source commit {source}')
             identities.append(field + b' ' + identity + b' ' + date.group(1))
-        new_headers = [f'tree {tree}'.encode('ascii'), f'parent {parent}'.encode('ascii'), *identities]
-        new_headers.extend(line for line in lines if line.startswith(b'encoding '))
+        # Use the source tree object itself, including deletions, modes and symlinks.
+        new_headers = [f'tree {self.tree(source)}'.encode('ascii')]
+        new_headers.extend(f'parent {sha(p)}'.encode('ascii') for p in dict.fromkeys(parents))
+        new_headers.extend(identities)
+        if maintenance_message is not None:
+            message = maintenance_message.encode('ascii')
+        else:
+            new_headers.extend(line for line in lines if line.startswith(b'encoding '))
         commit = b'\n'.join(new_headers) + b'\n\n' + message
         output = self.run('hash-object', '-t', 'commit', '-w', '--stdin', binary=True, input_data=commit)
-        return sha(output.stdout.strip().decode('ascii'))
+        rebuilt = sha(output.stdout.strip().decode('ascii'))
+        self.verify_identity(rebuilt, account)
+        return rebuilt
 
     def check_lfs(self, source_head):
         if self.lfs:
