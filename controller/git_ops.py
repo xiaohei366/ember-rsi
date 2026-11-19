@@ -8,8 +8,8 @@ import subprocess
 from api import BridgeError
 
 
-STATE_REF = 'refs/heads/gtihub-sync'
-LEGACY_STATE_REF = 'refs/heads/bridge-state'
+STATE_REF = 'refs/heads/github-sync'
+LEGACY_STATE_REFS = ('refs/heads/gtihub-sync', 'refs/heads/bridge-state')
 MASTER_BRANCH = 'master'
 MASTER_REF = 'refs/heads/' + MASTER_BRANCH
 
@@ -83,18 +83,35 @@ class Git:
         self.run(*negotiation, 'fetch', '--quiet', '--no-tags', *depth, remote.url, ref, remote=remote)
         return sha(self.run('rev-parse', 'FETCH_HEAD^{commit}').stdout.strip())
 
+    def ensure_commit(self, remote, revision):
+        revision = sha(revision)
+        if self.run('cat-file', '-e', revision + '^{commit}', allowed=(0, 1, 128)).returncode:
+            self.fetch(remote, revision)
+
+    def initial_base(self, after, before):
+        # The installation push can itself be skipped or overtaken by a later run.
+        install = self.run('log', '--first-parent', '--diff-filter=A', '-1', '--format=%H',
+                           sha(after), '--', '.github/workflows/bridge.yml').stdout.strip()
+        if install:
+            parents = self.run('show', '-s', '--format=%P', sha(install)).stdout.split()
+            base = parents[0] if parents else install
+            return before if before and self.is_ancestor(before, base) else base
+        return before or after
+
     def is_ancestor(self, earlier, later):
         return self.run('merge-base', '--is-ancestor', sha(earlier), sha(later),
                         allowed=(0, 1, 128)).returncode == 0
 
     def first_parent_range(self, after, before):
+        if before is None:
+            return self.run('rev-list', '--first-parent', '--reverse', sha(after)).stdout.splitlines()
         if sha(after) == sha(before):
             return []
         if self.is_ancestor(before, after):
             commits = self.run('rev-list', '--first-parent', '--reverse', f'{before}..{after}').stdout.splitlines()
             if commits and self.run('show', '-s', '--format=%P', commits[0]).stdout.split()[:1] == [before]:
                 return commits
-        raise BridgeError('Push before is not on the first-parent history of after')
+        raise BridgeError('Source history diverged: the cursor is not on the first-parent history of the selected revision')
 
     def tree(self, commit):
         return sha(self.run('rev-parse', sha(commit) + '^{tree}').stdout.strip())
@@ -129,6 +146,24 @@ class Git:
             people = [line.rsplit(b' ', 2)[0] for line in headers if line.startswith(field)]
             if people != [field + identity]:
                 raise BridgeError('Commit author and committer must both match the selected destination account')
+
+    def staged_authors(self, first, last, staged):
+        """Read legacy author choices in source-parent order for a deterministic rebuild."""
+        _, graph = self.introduced_commits(first, last)
+        translated, authors = {last: staged}, {}
+        for source, *parents in reversed(graph):
+            if source not in translated:
+                return None
+            fields = self.run('show', '-s', '--format=%P%x00%an%x00%ae', translated[source]).stdout
+            target_parents, name, email = fields.rstrip('\n').split('\0')
+            target_parents = target_parents.split()
+            if parents and len(parents) != len(target_parents):
+                return None
+            for parent, target in zip(parents, target_parents):
+                if translated.setdefault(parent, target) != target:
+                    return None
+            authors[source] = {'username': name, 'email': email}
+        return authors
 
     def verify_merge_identity(self, head, master, bot):
         # A fast-forward has no extra commit. A normal PR merge introduces head
@@ -188,10 +223,12 @@ class Git:
         self.run('push', '--quiet', f'--force-with-lease={STATE_REF}:{expected or ""}', remote.url,
                  f'{sha(head)}:{STATE_REF}', remote=remote)
 
-    def rename_legacy_state(self, remote, expected):
+    def rename_legacy_state(self, remote, old_ref, expected):
         if remote.provider != 'gitcode':
             raise BridgeError('Only the destination can receive checkpoints')
+        if old_ref not in LEGACY_STATE_REFS:
+            raise BridgeError('Unknown legacy state branch')
         tip = sha(expected)
-        self.run('push', '--quiet', '--atomic', f'--force-with-lease={LEGACY_STATE_REF}:{tip}',
+        self.run('push', '--quiet', '--atomic', f'--force-with-lease={old_ref}:{tip}',
                  f'--force-with-lease={STATE_REF}:', remote.url, f'{tip}:{STATE_REF}',
-                 f':{LEGACY_STATE_REF}', remote=remote)
+                 f':{old_ref}', remote=remote)

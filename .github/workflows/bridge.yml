@@ -3,10 +3,12 @@ name: Sync merged code
 'on':
   push:
     branches: ['**']
+  schedule:
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       operation:
-        description: Preview or apply the GitHub default branch file tree
+        description: Inspect or resume synchronization to the selected revision
         type: choice
         default: check
         options:
@@ -17,13 +19,12 @@ permissions: {}
 
 jobs:
   bridge:
-    if: ${{ !github.event.deleted && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    if: ${{ github.event_name == 'schedule' || (!github.event.deleted && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: gitcode-sync
     concurrency:
-      # Serialize retries of one revision. Different pushes wait for their own predecessor receipt.
-      group: gitcode-sync-${{ github.sha }}
+      group: gitcode-sync
       queue: max
     permissions:
       contents: read
@@ -37,9 +38,9 @@ jobs:
 
       - name: Apply the selected operation
         env:
-          GITCODE_SYNC_MODE: ${{ github.event_name == 'push' && 'apply' || inputs.operation }}
+          GITCODE_SYNC_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.operation || 'apply' }}
           GITCODE_SYNC_CONFIG_JSON: ${{ secrets.GITCODE_SYNC_CONFIG_JSON }}
-          GITCODE_REBOT_TOKEN: ${{ secrets.GITCODE_REBOT_TOKEN }}
+          GITCODE_ROBOT_TOKEN: ${{ secrets.GITCODE_ROBOT_TOKEN }}
           GITCODE_MEMBER_1_TOKEN: ${{ secrets.GITCODE_MEMBER_1_TOKEN }}
           GITCODE_MEMBER_2_TOKEN: ${{ secrets.GITCODE_MEMBER_2_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}

@@ -116,19 +116,27 @@ class CommentDelivery:
                     and pos.get('new_line') == line and pos.get('head_sha') == self.store.progress['pending']['head']):
                 matches_found.append(note_id)
         if len(matches_found) > 1:
-            raise BridgeError('Ambiguous inline comment receipt. Check the private pending record before retrying.')
+            raise BridgeError('Ambiguous inline comment receipt. Check the pending record before retrying.')
         return next(iter(matches_found), None)
 
     def post(self, source_id, intent):
-        api = self.bridge.account_api(intent['account'])
-        self.save(source_id, intent)
-        try:
-            response = api.call('POST', self.path + '/comments', intent['payload'])
-        except ApiError as error:
-            # Definite rejections have no note to reconcile. Other outcomes retain the intent.
-            if error.code in (400, 401, 403, 404, 422):
-                self.save(source_id, None)
-            raise
+        before = [str(note['id']) for note in self.notes()]
+
+        def publish(account, api):
+            identity = {'id': account['id'], 'username': account['username']}
+            attempt = {**intent, 'account': identity, 'before': before}
+            self.save(source_id, attempt)
+            try:
+                response = api.call('POST', self.path + '/comments', attempt['payload'])
+            except ApiError as error:
+                # Clear only a definite rejection. Unknown outcomes keep the
+                # actual account and original note list for reconciliation.
+                if error.code in (400, 401, 403, 404, 422):
+                    self.save(source_id, None)
+                raise
+            return attempt, response
+
+        intent, response = self.bridge.post_as(intent['account'], publish)
         handle = str(response.get('id') or '') if isinstance(response, dict) else ''
         intent = dict(intent, handle=handle)
         self.save(source_id, intent)
@@ -143,7 +151,7 @@ class CommentDelivery:
             if isinstance(record, dict):
                 found = self.find_new(record, self.notes())
                 if not found:
-                    raise BridgeError(f'Inline comment {source_id} has an unconfirmed write. Check the private '
+                    raise BridgeError(f'Inline comment {source_id} has an unconfirmed write. Check the '
                                       'receipt and the destination PR before authorizing another POST.')
                 self.save(source_id, found)
 
@@ -164,7 +172,6 @@ class CommentDelivery:
                 account = self.bridge.mapped_account(row['user'])
                 intent = {'account': {'id': account['id'], 'username': account['username']},
                           'payload': {'body': row['body'], 'path': row['path'],
-                                      'position': row['line'], 'position_type': 'text'},
-                          'before': [str(note['id']) for note in self.notes()]}
+                                      'position': row['line'], 'position_type': 'text'}}
                 self.post(str(row['id']), intent)
         print(f'REVIEW GitHub PR #{number} | confirmed {len(self.records)}, skipped {skipped}, replies ignored {replies}')
