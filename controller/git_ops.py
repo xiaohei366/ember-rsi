@@ -14,6 +14,10 @@ MASTER_BRANCH = 'master'
 MASTER_REF = 'refs/heads/' + MASTER_BRANCH
 
 
+class CommitIdentityMismatch(BridgeError):
+    """The stored Git author or committer differs from the expected account."""
+
+
 def sha(value):
     if not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{40}', value):
         raise BridgeError('Invalid SHA-1 object ID')
@@ -145,7 +149,8 @@ class Git:
         for field in (b'author ', b'committer '):
             people = [line.rsplit(b' ', 2)[0] for line in headers if line.startswith(field)]
             if people != [field + identity]:
-                raise BridgeError('Commit author and committer must both match the selected destination account')
+                raise CommitIdentityMismatch(
+                    'Commit author and committer must both match the selected destination account')
 
     def staged_authors(self, first, last, staged):
         """Read legacy author choices in source-parent order for a deterministic rebuild."""

@@ -11,7 +11,7 @@ import sys
 from tempfile import TemporaryDirectory
 
 from api import Api, ApiError, BridgeError, same_account
-from git_ops import Git, MASTER_BRANCH, MASTER_REF, Remote, repository, sha
+from git_ops import CommitIdentityMismatch, Git, MASTER_BRANCH, MASTER_REF, Remote, repository, sha
 from review_comments import CommentDelivery, first_comments
 from state_store import GitStore, checkpoint
 
@@ -127,6 +127,10 @@ def pull_number(pull):
     if not re.fullmatch(r'[1-9][0-9]*', value):
         raise BridgeError('Repository API returned an invalid PR number')
     return value
+
+
+def pull_is_merged(pull):
+    return pull.get('state') == 'merged' or bool(pull.get('merged_at'))
 
 
 class Bridge:
@@ -310,7 +314,7 @@ class Bridge:
         path = f'/pulls/{number}'
         pull = self.target_api.call('GET', path)
         head = pull.get('head') or {}
-        merged = pull.get('state') == 'merged' or bool(pull.get('merged_at'))
+        merged = pull_is_merged(pull)
         if (not same_account(pull.get('user') or {}, creator)
                 or (pull.get('base') or {}).get('ref') != MASTER_BRANCH
                 or (not merged and (head.get('ref') != branch or head.get('sha') != pending['head']))):
@@ -353,6 +357,22 @@ class Bridge:
         if 'base' in pending and self.git.tip(self.target, MASTER_REF) != pending['base']:
             raise BridgeError('Destination master advanced before merge. Rerun to prepare the current base.')
 
+    def verify_landed_merge(self, pending, master, path):
+        # Both callers have confirmed that master contains the exact head staged by the bridge.
+        try:
+            self.git.verify_merge_identity(pending['head'], master, self.bot)
+        except CommitIdentityMismatch as error:
+            if self.git.tree(master) != self.git.tree(pending['source']):
+                raise BridgeError('Current master has a different tree from GitHub after a non-robot merge') from error
+            if path is None:
+                raise BridgeError('Could not identify the GitCode PR for the non-robot merge') from error
+            pull = self.target_api.call('GET', path)
+            if (not pull_is_merged(pull) or (pull.get('base') or {}).get('ref') != MASTER_BRANCH
+                    or not same_account(pull.get('user') or {}, pending.get('creator', self.bot))):
+                raise BridgeError('Could not confirm the prepared GitCode PR was merged into master') from error
+            print(f'WARNING GitCode PR #{pull_number(pull)}: merge commit attribution differs from the configured robot. '
+                  f'The prepared commits are in master and its tree matches GitHub {pending["source"]}.')
+
     def finish_pull(self, store, progress, original, number=None):
         pending = progress['pending']
         path, merged = self.prepare_pull(store, progress, number, original)
@@ -369,7 +389,7 @@ class Bridge:
         master = self.git.fetch(self.target, MASTER_REF)
         if not self.git.is_ancestor(pending['head'], master):
             raise BridgeError('Destination master does not contain the prepared commits after the PR merge')
-        self.git.verify_merge_identity(pending['head'], master, self.bot)
+        self.verify_landed_merge(pending, master, path)
         if self.git.tree(master) != self.git.tree(pending['source']):
             raise BridgeError('Destination master changed during the merge. Rerun to align it to GitHub.')
         return master
@@ -442,9 +462,10 @@ class Bridge:
         original = self.source_pr(pending['github_pull'])
         number = self.pending_number(pending)
         if self.git.is_ancestor(pending['head'], master):
-            self.git.verify_merge_identity(pending['head'], master, self.bot)
+            path = f'/pulls/{number}' if number is not None else None
+            self.verify_landed_merge(pending, master, path)
             if not check and number is not None:
-                path, _ = self.prepare_pull(store, progress, number, original)
+                self.prepare_pull(store, progress, number, original)
                 CommentDelivery(self, store, path).recover()
             return master, 0
 
