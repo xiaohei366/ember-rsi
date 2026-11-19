@@ -505,6 +505,14 @@ class Bridge:
 
     def run(self, store, before, after, *, check=False):
         after = sha(after)
+        saved = store.progress
+        if (not check and store.old_events is None and saved is not None
+                and saved['pending'] is None and saved['cursor'] == after
+                and self.git.tip(self.target, MASTER_REF) == saved['master']):
+            store.migrate_legacy_branch()
+            print(f'CURRENT GitHub revision {after} and destination master match the checkpoint')
+            return
+
         if self.git.fetch(self.source, after) != after:
             raise BridgeError('GitHub did not return the selected revision')
         master = self.git.fetch(self.target, MASTER_REF)
