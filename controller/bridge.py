@@ -79,6 +79,8 @@ def workflow_range():
     event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
     if event['ref'] != os.environ['GITHUB_REF'] or event['after'] != after or event.get('deleted'):
         raise BridgeError('Push ref and after must match the checked-out revision')
+    if event.get('forced'):
+        raise BridgeError('Force push to the GitHub default branch detected. Review its history before syncing.')
     before = sha(event['before'])
     if (before == ZERO_SHA) != (event.get('created') is True) or after == ZERO_SHA:
         raise BridgeError('Invalid push boundaries')
@@ -456,7 +458,6 @@ class Bridge:
     def resume(self, store, progress, master, *, check):
         pending = progress['pending']
         source = sha(pending['source'])
-        self.git.ensure_commit(self.source, source)
         alignment = pending.get('alignment', False)
         batch = [source] if alignment else self.git.first_parent_range(source, progress['cursor'])
         original = self.source_pr(pending['github_pull'])
@@ -503,6 +504,23 @@ class Bridge:
                                       previous=progress['cursor'], check=check, alignment=True)
         return master
 
+    def source_range(self, start, after):
+        if after == start:
+            return []
+        if not self.git.is_ancestor(after, start):
+            return self.git.first_parent_range(after, start)
+
+        # The same older SHA can mean a delayed run or a rewind of the live branch.
+        live = self.git.tip(self.source, self.source_ref)
+        if live is None:
+            raise BridgeError('Cannot verify the current GitHub default branch head')
+        if live != start:
+            self.git.ensure_commit(self.source, live)
+            if self.git.is_ancestor(live, start):
+                raise BridgeError(f'GitHub default branch was rewound to {live}, behind saved sync revision {start}')
+            self.git.first_parent_range(live, start)
+        return []
+
     def run(self, store, before, after, *, check=False):
         after = sha(after)
         saved = store.progress
@@ -537,29 +555,31 @@ class Bridge:
             return confirmed
 
         count = 0
-        if progress['pending']:
-            revision = sha(progress['pending']['source'])
-            master, count = self.resume(store, progress, master, check=check)
-            # A merge can land just as another destination change lands. Confirm
-            # the saved source tree before advancing past this unfinished batch.
-            master = self.align(store, progress, revision, master, check=check)
-            progress = confirm(revision, master)
-        if progress['cursor'] is None:
+        pending = progress['pending']
+        start = progress['cursor']
+        if pending:
+            start = sha(pending['source'])
+            self.git.ensure_commit(self.source, start)
+        elif start is None:
             if before:
                 self.git.first_parent_range(after, before)
-            base = self.git.initial_base(after, before)
-            master = self.align(store, progress, base, master, check=check)
-            progress = confirm(base, master)
+            start = self.git.initial_base(after, before)
 
-        cursor = progress['cursor']
-        if self.git.is_ancestor(after, cursor):
+        # Verify the source history before making any outstanding PR or checkpoint writes.
+        commits = self.source_range(start, after)
+        if pending:
+            master, count = self.resume(store, progress, master, check=check)
+        if pending or progress['cursor'] is None:
+            master = self.align(store, progress, start, master, check=check)
+            progress = confirm(start, master)
+
+        if not commits:
             if not check:
                 store.save(progress)  # Also persists a converted legacy receipt on an idle run.
-            print(f'CURRENT selected GitHub revision {after} is covered by cursor {cursor}')
+            print(f'CURRENT selected GitHub revision {after} is covered by cursor {start}')
         else:
-            commits = self.git.first_parent_range(after, cursor)
-            master = self.align(store, progress, cursor, master, check=check)
-            progress = confirm(cursor, master)
+            master = self.align(store, progress, start, master, check=check)
+            progress = confirm(start, master)
             for github_pull, group in groupby(commits, key=self.source_pull):
                 batch = list(group)
                 master, imported = self.import_batch(store, progress, batch, master, github_pull,
@@ -588,6 +608,9 @@ def main():
     if not args.source_repo:
         parser.error('--source-repo is required outside GitHub Actions')
 
+    before, after = None, None
+    if os.environ.get('GITHUB_EVENT_NAME') or os.environ.get('GITHUB_ACTIONS') == 'true':
+        before, after = workflow_range()
     bot_token = os.environ.get('GITCODE_ROBOT_TOKEN')
     if not bot_token:
         raise BridgeError('Set GITCODE_ROBOT_TOKEN in the gitcode-sync environment')
@@ -599,10 +622,8 @@ def main():
                         os.environ.get('GITHUB_TOKEN'),
                         member_tokens=member_tokens)
         store = GitStore(Git(root / 'state'), bridge.target, bridge.binding, bridge.bot)
-        if os.environ.get('GITHUB_EVENT_NAME') or os.environ.get('GITHUB_ACTIONS') == 'true':
-            before, after = workflow_range()
-        else:
-            before, after = None, bridge.git.tip(bridge.source, bridge.source_ref)
+        if after is None:
+            after = bridge.git.tip(bridge.source, bridge.source_ref)
         bridge.run(store, before, after, check=args.check)
 
 
