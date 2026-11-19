@@ -50,19 +50,19 @@ def config_read(filename, members_file=DEFAULT_MEMBERS_FILE):
     seen = set()
     secret_owners, member_secrets = {}, {}
     for item in members:
-        if not isinstance(item, dict) or set(item) != {'github', 'gitcode', 'pr_token_secret'}:
-            raise BridgeError('Each member mapping requires github, gitcode and pr_token_secret')
+        if not isinstance(item, dict) or set(item) != {'github', 'gitcode', 'gitcode_pr_token_secret'}:
+            raise BridgeError('Each member mapping requires github, gitcode and gitcode_pr_token_secret')
         validate_account(item['github'], github=True)
         validate_account(item['gitcode'])
         source, member_id = item['github']['id'], item['gitcode']['id']
         if source in seen:
             raise BridgeError('Duplicate GitHub account ID in the mapping')
         seen.add(source)
-        secret = item['pr_token_secret']
+        secret = item['gitcode_pr_token_secret']
         if (not isinstance(secret, str) or not MEMBER_SECRET_NAME.fullmatch(secret)
                 or secret_owners.setdefault(secret, member_id) != member_id
                 or member_secrets.setdefault(member_id, secret) != secret):
-            raise BridgeError('Use one distinct numbered pr_token_secret per mapped GitCode account')
+            raise BridgeError('Use one distinct numbered gitcode_pr_token_secret per mapped GitCode account')
         if member_id == gitcode['bot']['id']:
             raise BridgeError('The bot is the fallback and must not be a member mapping')
     return {'gitcode': gitcode, 'members': members}
@@ -134,7 +134,7 @@ class Bridge:
         self.git = git
         self.bot = cfg['gitcode']['bot']
         self.mapping = {item['github']['id']: item['gitcode'] for item in cfg['members']}
-        self.member_secrets = {item['gitcode']['id']: item['pr_token_secret']
+        self.member_secrets = {item['gitcode']['id']: item['gitcode_pr_token_secret']
                                for item in cfg['members']}
         self.member_tokens = member_tokens or {}
         self.verified_members = {}

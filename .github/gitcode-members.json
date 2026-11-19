@@ -2,6 +2,6 @@
   {
     "github": {"id": "83061759", "username": "xiaohei366"},
     "gitcode": {"id": "66cbe75e08f63d641318ef0e", "username": "Gideon_Zhao"},
-    "pr_token_secret": "GITCODE_MEMBER_1_TOKEN"
+    "gitcode_pr_token_secret": "GITCODE_MEMBER_1_TOKEN"
   }
 ]
