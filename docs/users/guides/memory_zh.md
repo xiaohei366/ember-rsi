@@ -2,134 +2,50 @@
 
 [English](memory.md) | 简体中文 · [快速入门](../getting-started_zh.md)
 
-本指南介绍如何在 Policy 中配置和调用 Memory，保存执行经验并传给后续步骤使用。
+Memory 将经验整理为不可变的文件树快照。获授权的绑定通过 `await ctx.readMemory()` 读取调用开始时生效的版本，返回值包含版本引用、制品引用和 UTF-8 文件。没有可读快照时返回 `null`。
 
-Memory 保存的是供后续优化参考的经验文档，例如有效的执行方法、失败教训和改进建议。`memory.agent` 根据 Policy 提供的证据整理和更新这些文档。
+## 为 Policy 配置 Memory
 
-## 1. 在内置 Policy 中使用 Memory
-
-Harness²、WikiSkill 和 policy.parameter-agent 已配置 Memory 插件、提示词、Agent 绑定，以及保存和使用其输出的步骤：
-
-| Policy    | 证据视图           | 使用时机                                                                                                         |
-| --------- | ------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| Harness²  | `execution`        | 每个任务结束后更新经验文档，将 `memoryRef` 传给后续任务的 Proposer。通过 `policy.config.memory` 控制，默认启用。 |
-| WikiSkill | `training-summary` | 每轮训练评测后更新经验文档，并将 `memoryRef` 传给本轮 Proposer。没有 `memory` 配置开关。                         |
-
-`policy.parameter-agent` 通过 `policy.config.memory: true` 启用 Memory，默认关闭。
-每批评测后使用 `training-summary`、候选源码和 selector 结果整理经验，再传给后续提案。
-输出包含 `memoryRef`；普通更新失败时保留上一版本，不自动继承其他实验的经验。
-具体编排见 [参数搜索 Policy](../../../src/policies/parameter/agent/policy.yaml)。
-[通用 Memory 提示词](../../../src/policies/parameter/agent/memory.md) 保留在 RSI。
-需要场景适配时，将文件复制到场景目录，并在 Recipe 的
-`bindings.memoryUpdater.config.prompt` 中选择副本。路径相对于 Recipe 解析；
-Memory 流程和插件仍然复用框架实现。
-
-具体调用和状态更新见 [Harness² Policy](../../../src/policies/harness2/policy.yaml) 和 [WikiSkill Policy](../../../src/policies/wikiskill/policy.yaml)。各视图的可见范围见 [Evidence](../concepts/architecture_zh.md#evidence)。
-
-## 2. 为自定义 Policy 接入 Memory
-
-### 第一步：在 Policy 配置 Memory 绑定和状态
-
-先在 Policy 中配置 Memory 插件，并用状态字段保存当前经验文档版本的标识。下例声明要求 `contract.memory` 的 `memoryUpdater` 绑定，选择 `memory.agent`，用 `state.memoryRef` 保存当前版本的标识。
-
-将以下片段合并到已有 Policy 中。示例假设已经声明并配置名为 `agent` 的 Agent 绑定。
+在 Policy 的 `defaults.memory` 或 Recipe 顶层的 `memory` 中声明模块。以下 Recipe 片段使用 WikiSkill 内置的步骤名和绑定名。
 
 ```yaml
-# Policy excerpt
-require:
-  memoryUpdater:
-    contract: contract.memory
-defaults:
-  bindings:
-    memoryUpdater:
-      plugin: memory.agent
-      config:
-        agentRef: agent
-        prompt: ./memory.md
-        evidenceView: execution
-state_schema:
-  type: object
-  properties:
-    memoryRef:
-      type: [string, 'null']
-  required: [memoryRef]
-  additionalProperties: false
-state:
-  memoryRef: null # No experience yet.
+memory:
+  enabled: true
+  trigger: { afterStep: train }
+  observe:
+    steps: [train, propose, select]
+    excludeSteps: [baseline, validate, test]
+    includeCandidateDiffs: true
+    includeCandidateSources: true
+  consumers: [proposer]
+  evidenceView: training-summary
+  budget: { modelCalls: 2, timeoutSeconds: 600 }
 ```
 
-- `prompt` 是指导 Memory 如何整理经验的提示词文件，必填。该文件需要说明要提炼哪些经验、如何组织文档。
-- `evidenceView` 默认 `execution`；学习流程允许使用训练分数和反馈时，可选择 `training-summary`。其他配置与支持的限制见[配置 Schema](../../../src/plugins/shared/agent-editing/schema.ts)和[配置指南](configuration_zh.md)。
+Harness² 在每个任务结束后使用执行证据更新 Memory。WikiSkill 在训练评测完成后、Proposer 调用前更新。Parameter Agent 可通过 `memory.enabled: true` 开启，在每轮搜索后整理实测配置。三个 Policy 共用相同的模块声明格式。
 
-### 第二步：在 Policy 的流程中更新并使用经验
+## 选择证据和消费绑定
 
-**输入：Policy 通过调用步骤的 `with` 传入。**
+通过 `afterStep`、`afterIteration` 或 `afterPolicy: true` 选择串行边界，同一模块可配置多个触发条件。`every` 表示每完成 N 次指定步骤或迭代后触发。迭代支持 `skipFinal`，Memory 默认值为 false。可用 `if` 表达式增加条件。两个学习模块在同一边界触发时，Memory 先执行。
 
-| 字段              | 必填 | 类型                         | 用途                                                                                             |
-| ----------------- | ---- | ---------------------------- | ------------------------------------------------------------------------------------------------ |
-| `memoryRef`       | 是   | `string \| null`             | 当前经验文档版本的标识，首次调用可传 `null`；后续调用传上次返回的值，在已有经验上继续更新。      |
-| `goal`            | 是   | `string`                     | 本次要归纳什么经验，例如总结有效方法和失败原因。                                                 |
-| `evidenceRefs`    | 是   | `string[]`                   | 要分析的证据引用列表，例如评测返回的 `measurementRef`；Memory 根据 `evidenceView` 读取可见内容。 |
-| `sources`         | 否   | `{ candidateRef: string }[]` | 需要参考的候选列表，`memory.agent` 会读取其文件内容，供归纳经验时参考。                          |
-| `observations`    | 否   | `object \| null`             | Policy 提供的补充观察。                                                                          |
-| `comparison`      | 否   | `object`                     | 基线、试验候选及选择结果的对照信息，用于分析哪些修改有效。                                       |
-| `editConstraints` | 否   | `object`                     | 限制可以修改的经验文件及修改规模。                                                               |
+`observe.bindings` 和 `observe.steps` 取并集，`excludeSteps` 排除指定调用及其生成的测量内容。步骤可用唯一 ID 或能够消除歧义的路径。上例中，WikiSkill 能读到上一轮 Selector 的汇总决策和当前训练评测，验证集和测试集的逐项结果不进入证据窗口。
 
-**输出：Policy 从 `steps.<调用步骤 ID>.output` 读取，以下字段都会返回。**
+默认 `execution` 视图只提供执行证据。`training-summary` 可包含已获授权的训练反馈。内置编辑器通过 `context/learning/index.json` 读取证据索引。需要候选源码时设置 `includeCandidateSources`。设置 `includeBaseline` 可将应用的初始候选加入差异对照。
 
-| 字段        | 类型             | Policy 如何使用                                                                                                                        |
-| ----------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `status`    | `string`         | 判断本次结果：`updated` 表示已更新，`no-change` 表示无需更新，`failed` 表示更新失败。                                                  |
-| `memoryRef` | `string \| null` | 更新后的经验文档版本标识。Policy 将它保存到状态，供下一次 Memory 调用及后续插件使用；未更新或失败时保留输入值，没有经验时仍为 `null`。 |
-| `changeRef` | `string \| null` | 本次修改记录的标识，可用于查看改动；仅在 `updated` 时有值，其余情况为 `null`。                                                         |
-| `reason`    | `string`         | 更新、无需更新或失败的原因，供 Policy 判断或记录。                                                                                     |
+省略 `consumers` 时，默认授权 Policy 的 Proposer 绑定。编辑器把文件挂载到 `context/memory/`，并在 `context/input.json` 中列出索引。Policy 输出可通过 `${{ memory.ref }}` 引用活动快照。
 
-完整字段结构见 [Memory 契约](../../../src/contracts/plugin-types/memory.ts)。
+## 配置与复用经验
 
-**调用示例：评测 → 更新经验 → 保存返回值 → 生成提案。**
+Recipe 可以覆盖嵌套字段，数组整体替换。用 `plugin` 选择实现 `contract.memory` 的插件，插件参数放在 `config` 中。默认的 `memory.agent` 使用内置提示词，可通过 `config.prompt` 覆盖。无法唯一确定 Agent 时，设置 `config.agentRef`。目标可使用内联 `goal` 或相对路径 `goalFile`。每条资源路径都相对于声明该值的文件解析。
 
-如下所示，可以在评测结束后，先调用 `memoryUpdater` 更新经验文档，再将返回的 `memoryRef` 写入 Policy 状态，最后传给 `proposer`。下面的片段放在名为 `evaluate` 的评测步骤之后，假设已声明 `proposer` 绑定，并由 Policy 输入提供 `input.candidateRef`：
+`budget.modelCalls`、`timeoutSeconds` 和 `evidenceBytes` 限制单次更新。`editConstraints` 可限制路径、修改文件数和字节数。普通更新被拒绝时保留原快照，实验级预算和取消信号仍然生效。
 
-```yaml
-# Policy steps excerpt; keep the existing evaluate step before these calls.
-steps:
-  - id: remember
-    type: invoke
-    use: memoryUpdater
-    with:
-      memoryRef: ${{ state.memoryRef }}
-      goal: Preserve reusable execution patterns, sources, and uncertainty.
-      evidenceRefs:
-        - ${{ steps.evaluate.output.measurementRef }}
-  - id: save_memory
-    type: state
-    state:
-      memoryRef: ${{ steps.remember.output.memoryRef }}
-  - id: propose
-    type: invoke
-    use: proposer
-    with:
-      parent: ${{ input.candidateRef }}
-      goal: Improve the candidate using authorized evidence and experience.
-      evidenceRefs:
-        - ${{ steps.evaluate.output.measurementRef }}
-      memoryRef: ${{ state.memoryRef }}
+新实验默认从空 Memory 开始。可设置 `seed: { directory: ./wiki }`，或用 `seed: { fromExperiment: previous-id }` 复制已结束实验的活动快照。应用快照前可先预览目标目录。
+
+```sh
+arsi memory list <experiment-id>
+arsi memory show <memory-id> --to ./exported-wiki
+arsi memory apply <memory-id> --to ./exported-wiki
 ```
 
-**后续要让 Agent 使用 Memory，需要在插件中根据 `memoryRef` 读取经验文档，并将内容作为上下文传给 Agent。内置 `proposer.agent` 已实现这部分逻辑；自定义插件如需使用 Memory，也需要自行实现。**
-
-## 3. memory 的执行结果、保存与恢复
-
-| 结果        | 行为                                                                                                               |
-| ----------- | ------------------------------------------------------------------------------------------------------------------ |
-| `updated`   | 保存新一版经验文档，返回新的 `memoryRef`、修改记录 `changeRef` 和原因。Policy 保存新 `memoryRef`，供后续步骤使用。 |
-| `no-change` | 继续使用原 `memoryRef`，返回 `changeRef: null`，经验文档没有变化。                                                 |
-| `failed`    | 返回原 `memoryRef`、`changeRef: null` 和错误原因，保留原经验文档；调用收据仍为失败，Policy 可以继续。              |
-
-在[工作台](running-experiments_zh.md#工作台)的实验详情中，进入 **Reflection & Memory → Memory**，可查看每次更新的状态和原因，用 `Changes` 查看差异、`Full contents` 阅读经验文档，并通过 `View call` 检查对应调用。
-
-每次有内容更新，Runtime 都会保存一个新版本，已有版本的内容保持不变。`memoryRef` 指向某一版经验文档，`changeRef` 指向这次更新的修改记录。
-
-使用本地存储时，Runtime 将经验文档的内容和目录信息保存在 `.rsi/artifacts/`，Policy 检查点记录当前 `memoryRef`。**恢复同一个实验时，会继续使用已保存的文档版本。内置 Policy 每次启动新实验时，Memory 的初始值都为空（`memoryRef: null`），不会自动继承之前实验的 Memory。**
-
-普通 Memory 更新失败本身不会取消实验。取消、实验预算耗尽和 Runtime 无法保存关键运行记录等情况仍会停止执行。参见[取消与重试](running-experiments_zh.md#取消与恢复)和 [Memory 实现](../../../src/plugins/memory-agent/service.ts)。
+原始种子目录由用户管理时，省略 `--to` 会使用该目录；其他情况下请指定专用的导出目录。优化器资源的修订方法见 [Reflection 指南](reflection_zh.md)。

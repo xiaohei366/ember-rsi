@@ -7,11 +7,12 @@ import { validate } from '../../shared/schema.js';
 import { Policy } from '../policy/index.js';
 import { validateTemplate } from '../compiler/scope.js';
 import type { Registry } from '../registry/index.js';
-import { reflectionConfigFile } from '../revisions/declaration.js';
 import {
-  validateReflection,
+  validateLearning,
+  type MemoryConfig,
   type ReflectionConfig,
-} from '../revisions/validation.js';
+} from '../learning/validation.js';
+import type { LearningKind } from '../../contracts/learning.js';
 import { Binding } from './binding.js';
 import { resolveConfig } from './config.js';
 import { readYaml } from './yaml.js';
@@ -20,7 +21,8 @@ export interface RecipeLoadOptions {
   sourcePath?: string;
   /** A locked Policy definition supplied by Runtime during recovery. */
   policy?: Policy;
-  /** Previously validated, locked Reflection data supplied by Runtime during recovery. */
+  /** Supplied by Runtime when loading immutable experiment definitions. */
+  memory?: MemoryConfig;
   reflection?: ReflectionConfig;
 }
 
@@ -56,6 +58,26 @@ function parseBudget(value: unknown): Record<string, number> {
   return budget;
 }
 
+function learningDeclaration(
+  module: MemoryConfig | ReflectionConfig,
+): JsonObject {
+  const { digest: _digest, goalFile, goal, budget, ...rest } = module;
+  const { elapsedWallMs, ...limits } = budget;
+  const result = object(structuredClone(rest));
+  delete result.seedArtifactRef;
+  return {
+    ...result,
+    enabled: true,
+    ...(goalFile ? { goalFile } : { goal }),
+    budget: {
+      ...limits,
+      ...(elapsedWallMs === undefined
+        ? {}
+        : { timeoutSeconds: elapsedWallMs / 1000 }),
+    },
+  };
+}
+
 /** An assembled definition. Loading does not create an Application or plugin instance. */
 export class Recipe {
   readonly schemaVersion = 'rsi.recipe/v1';
@@ -68,7 +90,9 @@ export class Recipe {
   readonly policyInput: JsonObject;
   readonly bindings: Readonly<Record<string, Binding>>;
   readonly budget: Readonly<Record<string, number>>;
+  readonly memory: MemoryConfig | undefined;
   readonly reflection: ReflectionConfig | undefined;
+  readonly disabledLearning: readonly LearningKind[];
 
   private constructor(options: {
     id: string;
@@ -80,7 +104,9 @@ export class Recipe {
     policyInput: JsonObject;
     bindings: Record<string, Binding>;
     budget: Record<string, number>;
+    memory?: MemoryConfig;
     reflection?: ReflectionConfig;
+    disabledLearning: LearningKind[];
   }) {
     this.id = options.id;
     this.description = options.description;
@@ -91,6 +117,9 @@ export class Recipe {
     this.policyInput = freezeSnapshot(options.policyInput);
     this.bindings = Object.freeze(options.bindings);
     this.budget = Object.freeze(options.budget);
+    this.disabledLearning = Object.freeze(options.disabledLearning);
+    this.memory =
+      options.memory && freezeSnapshot(structuredClone(options.memory));
     this.reflection =
       options.reflection === undefined
         ? undefined
@@ -185,44 +214,26 @@ export class Recipe {
       override: { declaration: data.application, directory },
     });
     const budget = parseBudget(data.budget);
-    let reflection: ReflectionConfig | undefined;
-    const defaultReflection = policy.defaults.reflection;
-    if (data.reflection !== undefined && defaultReflection === undefined)
-      throw new Error(
-        'recipe.reflection: Policy does not declare defaults.reflection',
-      );
-    if (options.reflection !== undefined && defaultReflection === undefined)
-      throw new Error(
-        'recipe.reflection: locked Reflection requires Policy defaults.reflection',
-      );
-    if (defaultReflection !== undefined) {
-      const reflectionPath =
-        data.reflection === undefined
-          ? resolve(
-              policyDirectory,
-              reflectionConfigFile(
-                defaultReflection,
-                'policy.defaults.reflection',
-              ),
-            )
-          : resolve(
-              directory,
-              reflectionConfigFile(data.reflection, 'recipe.reflection'),
-            );
-      reflection =
-        options.reflection ??
-        (await validateReflection(
-          reflectionPath,
-          Object.fromEntries(
-            Object.entries(bindings).map(([name, binding]) => [
-              name,
-              binding.toJSON(),
-            ]),
-          ),
-          (id) => registry.get(id),
-          (id) => registry.contract(id),
-        ));
-    }
+    const source = { policy, recipeDirectory: directory, bindings, registry };
+    const memory =
+      options.memory ??
+      (await validateLearning('memory', {
+        ...source,
+        memoryEnabled: false,
+        ...(data.memory ? { override: object(data.memory) } : {}),
+      }));
+    const reflection =
+      options.reflection ??
+      (await validateLearning('reflection', {
+        ...source,
+        memoryEnabled: !!memory,
+        ...(data.reflection ? { override: object(data.reflection) } : {}),
+      }));
+    const disabledLearning = (['memory', 'reflection'] as const).filter(
+      (kind) =>
+        (data[kind] !== undefined || policy.defaults[kind] !== undefined) &&
+        !(kind === 'memory' ? memory : reflection),
+    );
     return new Recipe({
       id: string(data.id, 'recipe.id'),
       ...(data.description === undefined
@@ -235,6 +246,8 @@ export class Recipe {
       policyInput,
       bindings,
       budget,
+      disabledLearning,
+      ...(memory === undefined ? {} : { memory }),
       ...(reflection === undefined ? {} : { reflection }),
     });
   }
@@ -259,9 +272,13 @@ export class Recipe {
         ]),
       ),
       budget: { ...this.budget },
-      ...(this.reflection === undefined
-        ? {}
-        : { reflection: { configFile: this.reflection.path } }),
+      ...Object.fromEntries(
+        this.disabledLearning.map((kind) => [kind, { enabled: false }]),
+      ),
+      ...(this.memory ? { memory: learningDeclaration(this.memory) } : {}),
+      ...(this.reflection
+        ? { reflection: learningDeclaration(this.reflection) }
+        : {}),
     };
   }
 }

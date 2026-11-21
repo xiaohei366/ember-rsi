@@ -44,6 +44,7 @@ const roots = new Set([
   'input',
   'state',
   'application',
+  'memory',
   'steps',
   'loop',
 ]);

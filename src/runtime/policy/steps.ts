@@ -20,8 +20,7 @@ export type StepType =
   | 'if'
   | 'loop'
   | 'foreach'
-  | 'control'
-  | 'reflection';
+  | 'control';
 export type StepResult =
   | { kind: 'completed'; output: JsonValue }
   | { kind: 'break' }
@@ -37,9 +36,12 @@ export interface StepValidationContext {
   readonly stateSchema: JsonSchema;
   readonly parallel: boolean;
   readonly loopDepth: number;
-  readonly reflectionDeclared: boolean;
   readonly names: readonly string[];
-  validateTemplate(template: Template, locals?: readonly string[]): void;
+  validateTemplate(
+    template: Template,
+    locals?: readonly string[],
+    allowMemory?: boolean,
+  ): void;
   validateSteps(
     steps: readonly Step[],
     options: {
@@ -63,7 +65,8 @@ export interface StepContext {
   decision(key: string, choose: () => JsonValue): Promise<JsonValue>;
   invoke(binding: string, input: () => JsonValue): Promise<JsonValue>;
   updateState(patch: JsonObject): JsonObject;
-  reflect(): Promise<JsonValue>;
+  assertParallelHooks(): void;
+  iterationHooks(index: number, hasNext: boolean): Promise<void>;
   runSteps(
     steps: readonly Step[],
     options: {
@@ -86,6 +89,7 @@ export const reservedNames = [
   'application',
   'config',
   'input',
+  'memory',
   'state',
   'steps',
   'loop',
@@ -324,7 +328,7 @@ export class LoopStep implements Step {
   }
   validate(context: StepValidationContext): void {
     context.validateTemplate(this.maxIterations);
-    context.validateTemplate(this.condition, ['loop']);
+    context.validateTemplate(this.condition, ['loop'], false);
     context.validateSteps(this.steps, {
       scope: 'iteration',
       locals: ['loop'],
@@ -338,26 +342,31 @@ export class LoopStep implements Step {
       `${context.stepPath}.maxIterations`,
       Number.MAX_SAFE_INTEGER,
     );
-    for (let index = 0; ; index++) {
-      context.signal.throwIfAborted();
-      const locals = { loop: { index } };
-      const scope = `iteration-${index}`;
-      const entered = await context.decision(scope, () => {
-        return (
+    const enters = (index: number): Promise<JsonValue> =>
+      context.decision(
+        `iteration-${index}`,
+        () =>
           index < maximum &&
           boolean(
-            context.evaluate(this.condition, locals),
+            context.evaluate(this.condition, { loop: { index } }),
             `${context.stepPath}.while`,
-          )
-        );
-      });
-      if (entered !== true) break;
+          ),
+      );
+    for (
+      let index = 0, entered = (await enters(0)) === true;
+      entered;
+      index++
+    ) {
+      context.signal.throwIfAborted();
       const result = await context.runSteps(this.steps, {
-        scope,
-        locals,
+        scope: `iteration-${index}`,
+        locals: { loop: { index } },
       });
+      const hasNext =
+        result.kind !== 'break' && (await enters(index + 1)) === true;
+      await context.iterationHooks(index, hasNext);
       await context.boundary(index);
-      if (result.kind === 'break') break;
+      entered = hasNext;
     }
     return { kind: 'completed', output: context.evaluate(this.output) };
   }
@@ -440,7 +449,10 @@ export class ForEachStep implements Step {
       1,
     );
     const parallel = context.parallel || concurrency > 1;
-    if (parallel) assertParallelSafe(this.steps, context.stepPath);
+    if (parallel) {
+      assertParallelSafe(this.steps, context.stepPath);
+      context.assertParallelHooks();
+    }
     const saved = await context.decision('items', () => {
       const items = context.evaluate(this.items);
       if (!Array.isArray(items))
@@ -560,30 +572,6 @@ export class ControlStep implements Step {
     };
   }
 }
-export class ReflectionStep implements Step {
-  readonly type = 'reflection';
-  readonly id: string;
-  constructor(value: JsonObject) {
-    this.id = declaration(value, this.type, []);
-    Object.freeze(this);
-  }
-  validate(context: StepValidationContext): void {
-    if (!context.reflectionDeclared)
-      throw new Error(
-        `${context.label}: Reflection requires defaults.reflection.configFile`,
-      );
-    if (context.parallel)
-      throw new Error(
-        `${context.label}: parallel execution cannot call Reflection`,
-      );
-  }
-  async execute(context: StepContext): Promise<StepResult> {
-    return { kind: 'completed', output: await context.reflect() };
-  }
-  toJSON(): JsonObject {
-    return { id: this.id, type: this.type };
-  }
-}
 export function parseSteps(
   value: JsonValue | undefined,
   label: string,
@@ -604,8 +592,6 @@ export function parseSteps(
         return new ForEachStep(step);
       case 'control':
         return new ControlStep(step);
-      case 'reflection':
-        return new ReflectionStep(step);
       default:
         throw new Error(
           `${label}.${String(step.id)}.type: unknown step type ${String(step.type)}`,
@@ -625,9 +611,9 @@ export function assertParallelSafe(
   label: string,
 ): void {
   for (const step of steps) {
-    if (step instanceof StateStep || step instanceof ReflectionStep)
+    if (step instanceof StateStep)
       throw new Error(
-        `${label}/${step.id}: parallel execution cannot ${step.type === 'state' ? 'write shared state' : 'call Reflection'}`,
+        `${label}/${step.id}: parallel execution cannot write shared state`,
       );
     if (step instanceof IfStep) {
       assertParallelSafe(step.thenBranch.steps, label);

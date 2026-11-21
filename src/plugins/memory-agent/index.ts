@@ -3,14 +3,14 @@ import type {
   MemoryOutput,
   OperationDefinition,
 } from '../../contracts/index.js';
-import { configSchema, type AgentEditingConfig } from './schema.js';
+import { configSchema, type LearningAgentConfig } from './schema.js';
 import { memoryContract } from '../../contracts/plugin-types/index.js';
 import { createMemoryAgent } from './service.js';
 import { checkAgentEditor } from '../shared/agent-editing/doctor.js';
 export const memoryDefinition: OperationDefinition<
   MemoryInput,
   MemoryOutput,
-  AgentEditingConfig
+  LearningAgentConfig
 > = {
   id: 'memory.agent',
   description: 'Consolidate experiment experience into reusable memory.',

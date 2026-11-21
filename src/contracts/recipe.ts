@@ -1,4 +1,9 @@
 import type { JsonObject, JsonSchema } from './json.js';
+import {
+  learningDeclarationSchemas,
+  type MemoryDeclaration,
+  type ReflectionDeclaration,
+} from './learning.js';
 
 /** A declaration may inherit its plugin and individual configuration fields. */
 export interface BindingDeclaration {
@@ -20,7 +25,8 @@ export interface RecipeDeclaration {
   policy: { id: string; config?: JsonObject; input?: JsonObject };
   bindings?: Record<string, BindingDeclaration>;
   budget?: Record<string, number>;
-  reflection?: { configFile: string };
+  memory?: MemoryDeclaration;
+  reflection?: ReflectionDeclaration;
 }
 
 /** A normalized declaration, without runtime instances or executable definitions. */
@@ -68,12 +74,7 @@ export const recipeDeclarationSchema: JsonSchema = {
       type: 'object',
       additionalProperties: { type: 'number', minimum: 0 },
     },
-    reflection: {
-      type: 'object',
-      properties: { configFile: { type: 'string', minLength: 1 } },
-      required: ['configFile'],
-      additionalProperties: false,
-    },
+    ...learningDeclarationSchemas,
   },
   required: ['schemaVersion', 'id', 'application', 'policy'],
   additionalProperties: false,

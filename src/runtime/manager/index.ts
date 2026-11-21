@@ -15,7 +15,11 @@ import type {
 import { agentContract } from '../../contracts/plugin-types/agent.js';
 import { RuntimeContext } from '../../contracts/runtime/context.js';
 import { object, string, digest } from '../../shared/json.js';
-import { createCallExecutor, type CallExecutor } from './calls.js';
+import {
+  callIdentity,
+  createCallExecutor,
+  type CallExecutor,
+} from './calls.js';
 import { Instances } from './instances.js';
 import { executionLockPath, executionLockTiming } from './execution-lock.js';
 import { ManagedEvents } from '../services/events.js';
@@ -32,6 +36,7 @@ import {
   assertDefinitionLock,
   lockDefinition,
   parseLockedReflection,
+  parseLockedMemory,
   readResourceOrigins,
 } from './definition-lock.js';
 import { ExperimentFacts } from './facts.js';
@@ -44,10 +49,14 @@ import {
   assertCleanupResolved,
   reconcilePersistedCleanup,
 } from './cleanup.js';
-import { RevisionActivation } from './activation.js';
-import { reflect } from '../revisions/index.js';
-import { acquireResourceGate } from '../revisions/exclusion.js';
-import { RevisionApplication } from '../revisions/application.js';
+import { LearningActivation } from './activation.js';
+import { LearningCoordinator } from '../learning/coordinator.js';
+import { initializeMemory } from '../learning/memory.js';
+import { acquireResourceGate } from '../learning/exclusion.js';
+import {
+  RevisionApplication,
+  MemoryApplication,
+} from '../learning/application.js';
 import {
   PolicyCheckpoints,
   readPolicyCheckpoint,
@@ -168,6 +177,14 @@ export class Manager {
       artifacts: this.artifacts,
     });
   }
+  memory(): MemoryApplication {
+    return new MemoryApplication({
+      directory: this.directory,
+      rootDirectory: this.rootDirectory,
+      facts: this.facts,
+      artifacts: this.artifacts,
+    });
+  }
   private async execute(
     recipePath: string,
     options: RunOptions = {},
@@ -278,6 +295,9 @@ export class Manager {
           {
             sourcePath: recipe.sourcePath,
             policy: recipe.policy,
+            ...(definition.memory
+              ? { memory: parseLockedMemory(definition.memory) }
+              : {}),
             ...(definition.reflection
               ? { reflection: parseLockedReflection(definition.reflection) }
               : {}),
@@ -337,6 +357,7 @@ export class Manager {
       stopping.abort(error);
     });
     let initial: JsonObject = {};
+    let activeLearning: LearningActivation | undefined;
     // Definition locking can fail before the call executor is assembled.
     let activeCalls: CallExecutor | undefined;
     let services: RuntimeContext;
@@ -361,7 +382,10 @@ export class Manager {
       });
     const diagnostics = new Set<Promise<void>>();
     const businessTasks = new Set<Promise<unknown>>();
-    const businessWait = async <T>(job: Promise<T>): Promise<T> => {
+    const businessWait = async <T>(
+      job: Promise<T>,
+      waitSignal = signal,
+    ): Promise<T> => {
       businessTasks.add(job);
       void job.finally(() => businessTasks.delete(job)).catch(() => {});
       let abort: (() => void) | undefined;
@@ -369,13 +393,13 @@ export class Manager {
         return await Promise.race([
           job,
           new Promise<never>((_resolve, reject) => {
-            abort = () => reject(signal.reason);
-            if (signal.aborted) abort();
-            else signal.addEventListener('abort', abort, { once: true });
+            abort = () => reject(waitSignal.reason);
+            if (waitSignal.aborted) abort();
+            else waitSignal.addEventListener('abort', abort, { once: true });
           }),
         ]);
       } finally {
-        if (abort) signal.removeEventListener('abort', abort);
+        if (abort) waitSignal.removeEventListener('abort', abort);
       }
     };
     const diagnose = (
@@ -496,6 +520,9 @@ export class Manager {
         recipe = await Recipe.fromJSON(locked.recipe, this.options.registry, {
           sourcePath: string(locked.recipeSourcePath),
           policy: recipe.policy,
+          ...(locked.memory
+            ? { memory: parseLockedMemory(locked.memory) }
+            : {}),
           ...(locked.reflection
             ? { reflection: parseLockedReflection(locked.reflection) }
             : {}),
@@ -508,17 +535,15 @@ export class Manager {
           binding.toJSON(),
         ]),
       );
-      const reflection = recipe.reflection
-        ? structuredClone(recipe.reflection)
-        : undefined;
-      if (reflection) {
-        const generatorBinding = '_reflection';
-        bindings[generatorBinding] = {
-          plugin: reflection.implementation.ref,
-          config: reflection.implementation.config,
-        };
+      const { reflection, memory } = recipe;
+      for (const [name, module] of [
+        ['_memory', memory],
+        ['_reflection', reflection],
+      ] as const) {
+        if (module)
+          bindings[name] = { plugin: module.plugin, config: module.config };
       }
-      const activation = new RevisionActivation({
+      const activation = new LearningActivation({
         id,
         bindings,
         facts: this.facts,
@@ -529,6 +554,7 @@ export class Manager {
         diagnose,
         bindingVersions: definition && object(definition.bindingVersions),
       });
+      activeLearning = activation;
       const experimentFacts = new ExperimentFacts(
         id,
         this.facts,
@@ -541,6 +567,8 @@ export class Manager {
         registry: this.options.registry,
         facts: this.facts,
         revisionRefs: activation.revisionRefs,
+        memoryForBinding: (name) =>
+          memory?.consumers.includes(name) ? activation.memory : null,
         retryCalls,
         retryRef,
         context,
@@ -650,6 +678,8 @@ export class Manager {
           return object(await calls.invoke('_application', input, this));
         },
         async invoke(this: RuntimeContext, binding, input) {
+          if (binding === '_memory' || binding === '_reflection')
+            throw new Error('Learning modules require a Policy trigger');
           return calls.invoke(binding, input, this);
         },
         async invokeAgent(this: RuntimeContext, agentRef, input) {
@@ -719,60 +749,6 @@ export class Manager {
           }
         },
       });
-      const priorReflections = new Map<string, JsonObject[]>();
-      const runReflection = async (
-        caller: RuntimeContext,
-        stepPath: string,
-        state: JsonObject,
-        parallel: boolean,
-      ): Promise<JsonValue> => {
-        if (parallel)
-          throw new Error(`${stepPath}: Reflection requires serial execution`);
-        if (!reflection)
-          throw new Error(
-            `${stepPath}: Reflection module is not declared by this Policy`,
-          );
-        return reflect({
-          config: reflection,
-          invocation: {
-            policyScopeId: 'root',
-            stepPath,
-            attempt: retryRef,
-          },
-          priorAttempts: priorReflections.get(stepPath),
-          generatorCommitted: (reflectionId) =>
-            retryCalls?.get(`reflection/${reflectionId}`)?.status ===
-            'succeeded',
-          generatorBinding: '_reflection',
-          sourceResources: resourceOrigins,
-          state,
-          bindings: activation.bindings,
-          context: caller,
-          directory: this.directory,
-          revisionRefs: activation.revisionRefs,
-          getDefinition: (pluginId) => this.options.registry.get(pluginId),
-          invoke: async (binding, value, key, scope) => {
-            const prior = retryCalls?.get(key);
-            const path =
-              prior?.status === 'succeeded' &&
-              digest(prior.input) !== digest(value)
-                ? `${key}/${retryRef}`
-                : key;
-            return calls.invoke(
-              binding,
-              value,
-              caller.extend({
-                scope,
-                signal: AbortSignal.any([caller.signal, scope.signal]),
-              }),
-              path,
-            );
-          },
-          initialize: (parents) => activation.initialize(parents),
-          save: (changes, revisions, activationId) =>
-            activation.save(changes, revisions, activationId),
-        });
-      };
       for (const b of [
         recipe.application.toJSON(),
         ...Object.values(bindings),
@@ -780,23 +756,35 @@ export class Manager {
         if (!registrations.has(b.plugin))
           registrations.set(b.plugin, this.options.registry.retain(b.plugin));
       }
-      if (continuing) {
-        const reflectionFacts = this.facts.scan
-          ? this.facts.scan('reflection')
-          : await this.facts.list('reflection');
-        for await (const fact of reflectionFacts) {
-          if (fact.experimentId !== id) continue;
-          if (
-            fact.policyScopeId === 'root' &&
-            typeof fact.stepPath === 'string'
-          ) {
-            const attempts = priorReflections.get(fact.stepPath) ?? [];
-            attempts.push(fact);
-            priorReflections.set(fact.stepPath, attempts);
-          }
-        }
-      }
-      if (continuing) await activation.restore();
+      const root = context('_root', 'root');
+      const learning = new LearningCoordinator({
+        context: root,
+        directory: this.directory,
+        memory,
+        reflection,
+        activation,
+        attempt: retryRef,
+        sourceResources: resourceOrigins,
+        diagnose,
+        getDefinition: (name) => this.options.registry.get(name),
+        callId: (binding, input, path) => {
+          const prior = retryCalls?.get(path);
+          return typeof prior?.callId === 'string'
+            ? prior.callId
+            : callIdentity(id, binding, path, input);
+        },
+        invoke: (binding, input, path, scope) =>
+          businessWait(
+            calls.invoke(
+              binding,
+              input,
+              root.extend({ scope, signal: scope.signal }),
+              path,
+            ),
+            scope.signal,
+          ),
+      });
+      if (continuing) await learning.restore();
       const experimentInfo = {
         experimentId: id,
         recipeId: recipe.id,
@@ -818,6 +806,16 @@ export class Manager {
             ),
           ),
         );
+      if (memory?.seed && !activation.memory && (!continuing || !restore))
+        await initializeMemory({
+          config: memory,
+          experimentId: id,
+          facts: this.facts,
+          artifacts: this.artifacts,
+          directory: this.directory,
+          sourceDirectory: resourceOrigins._memory?.['/seed/directory'],
+          save: (value) => activation.initializeMemory(value),
+        });
       await this.facts.write('experiments', id, {
         id,
         recipeId: recipe.id,
@@ -832,7 +830,6 @@ export class Manager {
       } catch (error) {
         diagnose('rsi/experiment-started', error);
       }
-      const root = context('_root', 'root');
       const result = await businessWait(
         executeControlledPolicy(policy, {
           input: recipe.policyInput,
@@ -858,8 +855,7 @@ export class Manager {
           invoke: async (binding, value, path) =>
             calls.invoke(binding, value, root, path),
           incrementalCheckpoint: checkpoints,
-          reflect: (path, state, parallel) =>
-            runReflection(root, path, state, parallel),
+          learning,
         }),
       );
       await cleanup.within(drain(true));
@@ -869,6 +865,7 @@ export class Manager {
       const complete: JsonObject = {
         ...(await this.get(id)),
         status: 'succeeded',
+        learning: activation.summary,
         output: result,
         usage: budget.usage,
         durationMs: Date.now() - Date.parse(experimentStartedAt),
@@ -933,6 +930,7 @@ export class Manager {
               },
               snapshot,
               recovery,
+              recipe.memory ? (activeLearning?.memory?.ref ?? null) : null,
             );
         } catch (projectionError) {
           diagnose('rsi/partial-policy-output', projectionError);
@@ -951,6 +949,12 @@ export class Manager {
             }
           : {}),
         status,
+        learning: activeLearning?.summary ??
+          previous.learning ?? {
+            memoryRef: null,
+            memoryArtifactRef: null,
+            revisionRefs: {},
+          },
         error: errorText(error),
         ...(budgetMetric === undefined
           ? {}

@@ -17,7 +17,8 @@ Recipe 包含以下顶层字段，完整 Recipe 示例见[快速入门](../getti
 | `policy`        | 是   | 选择实验流程，并提供流程参数和初始数据。 | `id` 填 Policy ID，如 `policy.wikiskill`；`config` 填Policy规定需要的参数值，如轮数、数据集等；`input` 填Policy规定需要的输入数据，如初始候选等。                            |
 | `bindings`      | 否   | 指定流程中各动作使用的插件与配置。       | 键名与所选 Policy 的 `require` 一致。Policy 按这些名称使用插件，Recipe 通过对应条目的 `plugin` 和 `config` 指定具体实现与参数。                                              |
 | `budget`        | 否   | 设置实验的调用次数、运行时长等上限。     | 如 `evaluationRuns: 20`、`elapsedWallMs: 21600000`；详细字段见[限制与预算](#限制与预算)。                                                                                    |
-| `reflection`    | 否   | 替换 Policy 默认的 Reflection 配置。     | 填写配置对象，通过 `configFile` 指定 Reflection 配置文件路径，如 `{ configFile: ./reflection.yaml }`，其遵循独立的 [声明与调用规则](reflection_zh.md#通过-recipe-替换文件)。 |
+| `memory` | 否 | 按边界更新经验。 | 在 Recipe 中声明触发条件或覆盖 Policy 的默认值。见 [Memory](memory_zh.md)。 |
+| `reflection` | 否 | 修订指定绑定的资源。 | 在 Recipe 中声明触发条件和目标，或覆盖默认值。见 [Reflection](reflection_zh.md)。 |
 
 - Recipe 中的 `config` 用来配置所选的 Application、Policy 或插件，具体字段和填写要求由各自的配置 Schema 定义。
   - 填写时可以沿用 Schema 默认值，插件绑定还可继承 Policy 的默认配置；
@@ -189,19 +190,7 @@ arsi run path/to/recipe.yaml
 其他情况为 `null`。预算耗尽原因记录在实验顶层，并通过 `partialOutput` 保留最后
 已提交的当前最优结果。
 
-`policy.parameter-agent` 还支持独立的 `policy.config.memory` 和
-`policy.config.reflection` 开关，默认均为 `false`。Memory 在每批完成评测后整理经验，
-将保存的 `memoryRef` 传给后续提案；Reflection 在仍可继续试验的批次之间仅修订
-Proposer 的 `guidance`。两者复用配置的 `agent` 绑定和 `training-summary` 证据视图。
-Policy 提供通用 Proposer、Memory 和 Reflection 提示词，以及默认
-[指导文档](../../../src/policies/parameter/agent/guidance/search.md)。场景可将指引复制到
-独立目录，再通过 `bindings.proposer.config.guidance` 选择副本。Reflection 开关只控制
-调用；即使关闭，Recipe 加载时仍会校验其配置和资源。自定义 Proposer 需暴露所配置的
-Reflection 目标资源，或在 Recipe 中选择与它兼容的 Reflection 配置文件。
-场景可通过 `bindings.proposer.config.prompt`、`bindings.memoryUpdater.config.prompt`
-和 `reflection.configFile` 指向各自的提示词副本，无需复制 Policy。
-结果包含 `memoryRef`，没有经验时为 `null`。存储与激活行为见
-[Memory](memory_zh.md) 和 [Reflection](reflection_zh.md)。
+`policy.parameter-agent` 可通过 Recipe 顶层的 `memory.enabled` 和 `reflection.enabled` 单独开启学习模块，二者默认关闭。Memory 在有评测结果的轮次整理配置经验，供获授权的后续调用读取。Reflection 在还有下一轮时修订 Proposer 的指导文件。两个模块默认使用 `agent` 绑定及 `training-summary` 视图。可通过 `bindings.proposer.config.prompt`、`memory.config.prompt`、`reflection.goalFile` 和 `bindings.proposer.config.guidance` 覆盖各自资源。结果中的 `memoryRef` 指向活动快照，缺省为 `null`。参见 [Memory](memory_zh.md) 和 [Reflection](reflection_zh.md)。
 
 这是可复用的单文件配置搜索编排；目标、研究方法和专家角色由 Recipe 及其资源提供。
 Evaluator 绑定仍要求 `contract.inferencebench`，selector 要求
@@ -248,8 +237,9 @@ Recipe 中省略的绑定配置会先继承 Policy 默认值。下表的“缺�
 | Pareto 演化提案器                     | `maxRollouts`                                      | 初始评分、父候选与提案比较、种群选择消耗的任务 rollout 总额度，与评测调用次数预算分别计算。             | 必填，无默认值。                                                                  |
 | Optuna Proposer                       | `python.timeoutMs`                                 | 单次 Python worker 调用的时长上限，单位毫秒。                                                           | 无单次 worker 调用的独立时长上限。                                                |
 | Optuna Proposer                       | `maxSamplingAttempts`                              | 整个搜索的采样尝试次数上限，包含不进入评测的重复参数组合；评测次数另由 `policy.config.maxTrials` 限制。 | 不额外限制采样尝试次数。                                                          |
-| Reflection 文件                       | `budget.modelCalls`                                | 单次 Reflection 的模型请求数上限；设为 0 时不启动内置生成器，正数上限需要后端支持计量。                 | 无单次 Reflection 的模型调用次数上限。                                            |
-| Reflection 文件                       | `budget.timeoutSeconds`                            | 单次 Reflection 的时长上限，单位秒。                                                                    | 无单次 Reflection 的独立时长上限。                                                |
+| Memory 或 Reflection | `budget.modelCalls` | 单次学习调用的模型请求上限，0 阻止新模型请求。 | 无额外的模型调用次数上限。 |
+| Memory 或 Reflection | `budget.timeoutSeconds` | 单次学习调用的墙钟时间上限，单位秒。 | 无额外的时长上限。 |
+| Memory 或 Reflection | `budget.evidenceBytes` | 单次证据投影的字节上限。 | 无额外的模块级字节上限。 |
 | Target                                | `entries[].content.maxBytes`                       | Target 条目内单个文件的内容大小上限，单位字节。                                                         | Target 不设置单文件大小上限。                                                     |
 | Target                                | `constraints.maxChangedFiles`                      | 一次候选提交最多允许修改的文件数。                                                                      | Target 不限制变更文件数。                                                         |
 | Target                                | `constraints.maxChangedBytes`                      | 一次候选提交中，变更文件的内容总大小上限，单位字节。                                                    | Target 不限制变更文件的内容总大小。                                               |

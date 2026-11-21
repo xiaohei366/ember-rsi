@@ -13,7 +13,11 @@ import {
   freezeSnapshot,
 } from '../../shared/json.js';
 import { validate } from '../../shared/schema.js';
-import { readReflectionResult } from '../revisions/records.js';
+import type {
+  LearningKind,
+  LearningTrigger,
+} from '../../contracts/learning.js';
+import { matchesStepPath } from '../learning/trigger.js';
 import { evaluateTemplate } from './expression.js';
 import {
   type Step,
@@ -38,11 +42,16 @@ export interface PolicyOptions {
     stablePath: string,
     parallel: boolean,
   ): Promise<JsonValue>;
-  reflect?(
-    stablePath: string,
-    state: JsonObject,
-    parallel: boolean,
-  ): Promise<JsonValue>;
+  learning?: {
+    memory?: { trigger: readonly LearningTrigger[] };
+    reflection?: { trigger: readonly LearningTrigger[] };
+    memoryRef(): string | null;
+    execute(
+      kind: LearningKind,
+      hookKey: string,
+      triggerPath: string,
+    ): Promise<JsonValue>;
+  };
   checkpoint(snapshot: JsonObject): Promise<void>;
   restore?: JsonObject;
   recovery?: PolicyRecovery;
@@ -192,6 +201,7 @@ export function partialPolicyOutput(
   options: PolicyInputs,
   checkpoint: JsonObject,
   recovery?: PolicyRecovery,
+  memoryRef: string | null = null,
 ): JsonValue {
   const initial = initializePolicy(policy, options, recovery?.initialState);
   const { application, config, input } = initial;
@@ -215,6 +225,7 @@ export function partialPolicyOutput(
     input,
     state,
     steps,
+    memory: { ref: memoryRef },
   });
   validate(policy.outputSchema, output, 'policy.output');
   return output;
@@ -326,6 +337,7 @@ export async function runPolicy(
       input,
       state,
       steps: outputs,
+      memory: { ref: options.learning?.memoryRef() ?? null },
       ...scope.locals,
       ...extra,
     };
@@ -338,6 +350,76 @@ export async function runPolicy(
     return structuredClone(
       evaluateTemplate(template, environment(scope, extra)),
     );
+  }
+  const locations = new Map(
+    policy.flowIndex.locations.map((entry) => [entry.step, entry.location]),
+  );
+  const learningKinds = ['memory', 'reflection'] as const;
+  async function runHooks(
+    boundary: 'afterStep' | 'afterIteration' | 'afterPolicy',
+    location: string,
+    path: string,
+    scope: Environment,
+    iteration?: { index: number; hasNext: boolean },
+  ): Promise<void> {
+    const learning = options.learning;
+    if (!learning) return;
+    if (boundary === 'afterIteration' && Object.hasOwn(boundaries, path))
+      return;
+    if (
+      boundary === 'afterPolicy' &&
+      Object.hasOwn(boundaries, 'policy-completed')
+    )
+      return;
+    const scheduled =
+      boundary === 'afterStep' ? object(journal[path]).learning : undefined;
+    for (const kind of learningKinds) {
+      if (
+        boundary === 'afterStep' &&
+        !(Array.isArray(scheduled) && scheduled.includes(kind))
+      )
+        continue;
+      const triggers = learning[kind]?.trigger.filter((trigger) =>
+        'afterPolicy' in trigger
+          ? boundary === 'afterPolicy'
+          : 'afterStep' in trigger
+            ? boundary === 'afterStep' && trigger.afterStep === location
+            : boundary === 'afterIteration' &&
+              trigger.afterIteration === location,
+      );
+      if (!triggers?.length) continue;
+      const hookKey = `${path}/@learning/${kind}`;
+      if (Object.hasOwn(journal, hookKey)) continue;
+      const matches = triggers.some((trigger) => {
+        if ('afterIteration' in trigger && iteration) {
+          if (
+            !iteration.hasNext &&
+            (trigger.skipFinal ?? kind === 'reflection')
+          )
+            return false;
+          if ((iteration.index + 1) % (trigger.every ?? 1) !== 0) return false;
+        }
+        if ('afterStep' in trigger && (trigger.every ?? 1) > 1) {
+          const count = Object.keys(journal).filter((key) =>
+            matchesStepPath(key, location),
+          ).length;
+          if (count % trigger.every! !== 0) return false;
+        }
+        if (trigger.if === undefined) return true;
+        const guard = evaluate(trigger.if, scope);
+        if (typeof guard !== 'boolean')
+          throw new Error(`${hookKey}.if must be boolean`);
+        return guard;
+      });
+      signal.throwIfAborted();
+      const output = matches
+        ? await learning.execute(kind, hookKey, path)
+        : { status: 'skipped-by-trigger' };
+      signal.throwIfAborted();
+      const record = { result: { kind: 'completed', output }, patch: {} };
+      journal[hookKey] = record;
+      await persist({ kind: 'step', path: hookKey, value: record });
+    }
   }
   async function runStep(
     step: Step,
@@ -355,6 +437,7 @@ export async function runPolicy(
       result = stepResult(record.result!);
     } else {
       const before = state;
+      let iterationScope = scope;
       const context: StepContext = {
         input,
         config,
@@ -378,7 +461,8 @@ export async function runPolicy(
             return saved.output;
           }
           const value = choose();
-          if (!options.routing || value === false) return value;
+          if (!options.learning && (!options.routing || value === false))
+            return value;
           const record = {
             result: { kind: 'completed', output: value },
             patch: {},
@@ -408,19 +492,31 @@ export async function runPolicy(
           signal.throwIfAborted();
           return updateState(patch, parallel);
         },
-        async reflect() {
-          if (parallel)
-            throw new Error(
-              `${stepPath}: Reflection requires serial execution`,
-            );
-          if (!policy.defaults.reflection || !options.reflect)
-            throw new Error(`${stepPath}: Reflection is not configured`);
-          signal.throwIfAborted();
-          const value = structuredClone(
-            await options.reflect(stepPath, structuredClone(state), parallel),
+        assertParallelHooks() {
+          const prefix = locations.get(step)! + '/';
+          for (const kind of learningKinds)
+            if (
+              options.learning?.[kind]?.trigger.some(
+                (trigger) =>
+                  !('afterPolicy' in trigger) &&
+                  ('afterStep' in trigger
+                    ? trigger.afterStep
+                    : trigger.afterIteration
+                  ).startsWith(prefix),
+              )
+            )
+              throw new Error(
+                `${stepPath}: parallel foreach contains a ${kind} learning trigger`,
+              );
+        },
+        iterationHooks(index, hasNext) {
+          return runHooks(
+            'afterIteration',
+            locations.get(step)!,
+            `${stepPath}/iteration-${index}`,
+            iterationScope,
+            { index, hasNext },
           );
-          signal.throwIfAborted();
-          return readReflectionResult(value);
         },
         runSteps(children, settings) {
           return runSteps(
@@ -432,6 +528,11 @@ export async function runPolicy(
             `${stepPath}/${settings.scope}`,
             parallel || (settings.parallel ?? false),
             settings.output,
+            step.type === 'loop'
+              ? (inner) => {
+                  iterationScope = inner;
+                }
+              : undefined,
           );
         },
         boundary(iteration) {
@@ -440,9 +541,17 @@ export async function runPolicy(
       };
       result = await step.execute(context);
       signal.throwIfAborted();
+      // Persist hook eligibility with the business step. Newly enabled hooks must not run at a past boundary.
+      const learning = learningKinds.filter((kind) =>
+        options.learning?.[kind]?.trigger.some(
+          (trigger) =>
+            'afterStep' in trigger && trigger.afterStep === locations.get(step),
+        ),
+      );
       journal[stepPath] = {
         result: structuredClone(result),
         patch: changedFields(before, state),
+        ...(learning.length ? { learning } : {}),
       };
       await persist({
         kind: 'step',
@@ -465,6 +574,7 @@ export async function runPolicy(
     path: string,
     parallel: boolean,
     output: Template = null,
+    captureScope?: (scope: Environment) => void,
   ): Promise<StepResult> {
     const frame: Frame = {
       declared: new Set(steps.map((step) => step.id)),
@@ -474,13 +584,22 @@ export async function runPolicy(
       ...inherited,
       frames: [...inherited.frames, frame],
     };
+    captureScope?.(scope);
     for (const step of steps) {
       const result = await runStep(step, scope, path, parallel);
+      if (result.kind === 'completed')
+        frame.outputs[step.id] = freezeSnapshot({
+          output: structuredClone(result.output),
+        });
+      await runHooks(
+        'afterStep',
+        locations.get(step)!,
+        `${path}/${step.id}`,
+        scope,
+      );
       if (result.kind !== 'completed') return result;
-      frame.outputs[step.id] = freezeSnapshot({
-        output: structuredClone(result.output),
-      });
     }
+    if (path === 'steps') await runHooks('afterPolicy', 'steps', path, scope);
     signal.throwIfAborted();
     return { kind: 'completed', output: evaluate(output, scope) };
   }

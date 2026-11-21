@@ -45,7 +45,21 @@ export function validateCheckpointStep(path: string, raw: JsonValue): void {
   if (!path.startsWith('steps/'))
     throw new Error(`checkpoint.journal: invalid step path ${path}`);
   const record = object(raw, `checkpoint.journal.${path}`);
-  unknownKeys(record, ['result', 'patch'], `checkpoint.journal.${path}`);
+  unknownKeys(
+    record,
+    ['result', 'patch', 'learning'],
+    `checkpoint.journal.${path}`,
+  );
+  if (
+    record.learning !== undefined &&
+    (!Array.isArray(record.learning) ||
+      record.learning.some(
+        (kind) => kind !== 'memory' && kind !== 'reflection',
+      ))
+  )
+    throw new Error(
+      `checkpoint.journal.${path}.learning: invalid learning kinds`,
+    );
   object(record.patch, 'checkpoint.patch');
   const result = object(record.result, 'checkpoint.result');
   if (result.kind === 'completed') {

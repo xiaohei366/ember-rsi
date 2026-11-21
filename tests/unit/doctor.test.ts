@@ -308,11 +308,11 @@ test('doctor retains Recipe schema, Policy, binding, budget and Reflection valid
         reason: /budget.*operations/,
       },
       {
-        name: 'Reflection authorization',
+        name: 'unknown Reflection field',
         change(recipe) {
           recipe.reflection = { configFile: 'missing.yaml' };
         },
-        reason: /recipe.reflection/,
+        reason: /reflection|configFile/i,
       },
     ];
     let probes = 0;
@@ -708,4 +708,26 @@ test('CLI emits one JSON diagnostic for registration/loading errors and reports 
   } finally {
     await f.dispose();
   }
+});
+
+test('disabled learning modules report their status without accessing unused resources', async (t) => {
+  const f = await fixture();
+  t.after(() => f.dispose());
+  const data = object(JSON.parse(await readFile(f.path, 'utf8')));
+  for (const name of ['memory', 'reflection'])
+    data[name] = {
+      enabled: false,
+      goalFile: 'unused-goal.md',
+      plugin: 'missing',
+    };
+  await writeFile(f.path, JSON.stringify(data));
+  const report = await doctorRecipe(f.runtime, f.path, { staticOnly: true });
+  assert.equal(report.summary.failed, 0);
+  for (const name of ['memory', 'reflection'])
+    assert.deepEqual(
+      report.checks
+        .filter((check) => check.id.startsWith(name + '.'))
+        .map((check) => [check.id, check.status]),
+      [[name + '.status', 'unchecked']],
+    );
 });

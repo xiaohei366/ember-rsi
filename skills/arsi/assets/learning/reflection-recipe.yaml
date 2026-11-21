@@ -30,7 +30,14 @@ bindings:
       plugin: selector.metric,
       config: { metric: checkPhrase, direction: maximize },
     }
-reflection: { configFile: ./reflection-only.yaml }
+reflection:
+  trigger: { afterIteration: search }
+  observe: { bindings: [proposer, evaluator, selector] }
+  targets:
+    proposer: { resources: [guidance] }
+  goalFile: ./reflection-goal.md
+  config: { agentRef: agent, prompt: ./reflection.md }
+  budget: { modelCalls: 6, timeoutSeconds: 90 }
 budget:
   modelCalls: 20
   evaluationRuns: 3

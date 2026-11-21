@@ -8,8 +8,7 @@ export type PolicyStepType =
   | 'if'
   | 'loop'
   | 'foreach'
-  | 'control'
-  | 'reflection';
+  | 'control';
 export interface StructureDiagnostic {
   category:
     | 'missing-source'
@@ -43,7 +42,8 @@ export interface StructureScope {
 }
 export interface StructureFlowNode {
   id: string;
-  kind: 'step' | 'entry' | 'exit' | 'failure';
+  kind: 'step' | 'entry' | 'exit' | 'failure' | 'learning';
+  learningKind?: 'memory' | 'reflection';
   stepId: string | null;
   scopeId: string;
   label: string;
@@ -52,7 +52,14 @@ export interface StructureFlowEdge {
   id: string;
   source: string;
   target: string;
-  kind: 'sequence' | 'branch' | 'repetition' | 'break' | 'continue' | 'fail';
+  kind:
+    | 'sequence'
+    | 'branch'
+    | 'repetition'
+    | 'break'
+    | 'continue'
+    | 'fail'
+    | 'learning-hook';
   label: string | null;
   location: string;
 }
@@ -74,7 +81,9 @@ export interface StructureDataNode {
     | 'output'
     | 'application'
     | 'loop'
-    | 'item';
+    | 'item'
+    | 'memory'
+    | 'reflection';
   stepId: string | null;
   label: string;
   scopeId: string;
@@ -85,7 +94,14 @@ export interface StructureDataEdge {
   id: string;
   source: { nodeId: string; portId: string };
   target: { nodeId: string; portId: string };
-  kind: 'reference' | 'state-write' | 'item-binding' | 'output-mapping';
+  kind:
+    | 'reference'
+    | 'state-write'
+    | 'item-binding'
+    | 'output-mapping'
+    | 'learning-observe'
+    | 'learning-consume'
+    | 'learning-target';
   dynamic: boolean;
   /** Branch origin or symbolic collection mapping, not an observed result. */
   label: string | null;

@@ -77,7 +77,7 @@ arsi（Recursive Self-Improvement）是面向 Agent 和 AI 基础设施的插件
 
 ## 插件级自进化
 
-框架提供 Memory、Reflection 等插件级自进化组件。选用已接入这些组件的 Policy，并配置相应的插件绑定、学习目标和授权资源，即可在实验流程中使用。
+框架提供 Memory、Reflection 等插件级自进化组件。可在 Policy 默认配置或 Recipe 中声明串行触发边界、观察范围和获授权的消费绑定或修改目标。
 
 具体配置与更新生效方式见 [Memory 使用指南](../guides/memory_zh.md)和 [Reflection 使用指南](../guides/reflection_zh.md)；可用实现见[内置组件](../guides/built-in-components_zh.md)。
 

@@ -15,7 +15,7 @@ import {
 import { typedArtifact } from '../../src/contracts/models/measurement.js';
 import { Manager } from '../../src/runtime/manager/index.js';
 import { Registry } from '../../src/runtime/registry/index.js';
-import { collectReflectionEvidence } from '../../src/runtime/revisions/evidence.js';
+import { collectLearningEvidence } from '../../src/runtime/learning/evidence.js';
 import { object, string } from '../../src/shared/json.js';
 for (const consumer of ['Manager', 'Reflection'] as const) {
   test(`${consumer} uses Measurement ownership without visibility metadata`, async () => {
@@ -106,9 +106,10 @@ for (const consumer of ['Manager', 'Reflection'] as const) {
                 output: { measurementRef: 'measurement-owned' },
                 finishedAt: '2026-10-26T00:00:01Z',
               });
-              const snapshot = await collectReflectionEvidence({
+              const snapshot = await collectLearningEvidence({
+                kind: 'reflection',
                 context,
-                names: ['evaluator'],
+                observe: { bindings: ['evaluator'] },
                 identity: 'test-boundary',
                 capturedAt: '2026-10-26T00:00:02Z',
                 maxBytes: 16000,

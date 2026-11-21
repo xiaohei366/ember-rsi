@@ -4,6 +4,11 @@
  * Contexts are live process objects and must not be persisted as JSON.
  */
 export class RuntimeContext {
+  /** Standalone and non-call scopes have no authorized Memory. */
+  async readMemory(): Promise<import('./services.js').MemorySnapshot | null> {
+    return null;
+  }
+
   /**
    * Inherit this scope and shadow only the supplied fields, following Cordis's
    * metadata scope model. Descriptors preserve getters and symbol keys. Values

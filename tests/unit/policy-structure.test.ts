@@ -37,7 +37,7 @@ function project(
         },
       },
     },
-    reflection: { initial: 'saved-reflection' },
+    reflection: null,
   });
 }
 function node(
@@ -50,7 +50,7 @@ function invoke(id: string, input: JsonValue = {}): JsonObject {
   return { id, type: 'invoke', use: 'worker', with: input };
 }
 
-test('all seven step kinds retain scoped identities, empty branches and saved binding details', () => {
+test('all six step kinds retain scoped identities, empty branches and saved binding details', () => {
   const model = project(
     [
       invoke('seed', '${{ application.baseline }}'),
@@ -83,7 +83,6 @@ test('all seven step kinds retain scoped identities, empty branches and saved bi
         steps: [invoke('local', '${{ row }}')],
         output: '${{ steps.local.output }}',
       },
-      { id: 'reflect', type: 'reflection' },
     ],
     {
       input: { count: '${{ config.count }}' },
@@ -94,15 +93,7 @@ test('all seven step kinds retain scoped identities, empty branches and saved bi
   assert.equal(model.availability.overall, 'complete');
   assert.deepEqual(
     new Set(model.steps.map((step) => step.type)),
-    new Set([
-      'invoke',
-      'state',
-      'if',
-      'loop',
-      'foreach',
-      'control',
-      'reflection',
-    ]),
+    new Set(['invoke', 'state', 'if', 'loop', 'foreach', 'control']),
   );
   const locals = model.steps.filter((step) => step.localId === 'local');
   assert.equal(locals.length, 2);
@@ -759,7 +750,7 @@ test('saved Recipe input contributes declared dependencies without pruning Polic
   assert.ok(!model.flow.nodes.some((entry) => entry.kind === 'failure'));
 });
 
-test('missing saved binding fields and Reflection configuration mark details partial', () => {
+test('missing saved binding fields mark details partial', () => {
   const model = projectPolicyStructure({
     experimentId: 'missing-context',
     definitionDigest: 'saved',
@@ -768,10 +759,7 @@ test('missing saved binding fields and Reflection configuration mark details par
       schemaVersion: 'rsi.policy/v1',
       id: 'missing-context',
       require: { worker: { contract: 'contract.fixture' } },
-      steps: [
-        { id: 'call', type: 'invoke', use: 'worker' },
-        { id: 'reflect', type: 'reflection' },
-      ],
+      steps: [{ id: 'call', type: 'invoke', use: 'worker' }],
       output: null,
     },
     recipe: {
@@ -785,7 +773,7 @@ test('missing saved binding fields and Reflection configuration mark details par
     data: 'complete',
     details: 'partial',
   });
-  assert.equal(model.diagnostics.length, 2);
+  assert.equal(model.diagnostics.length, 1);
   assert.ok(
     model.diagnostics.every(
       (diagnostic) =>
@@ -793,5 +781,62 @@ test('missing saved binding fields and Reflection configuration mark details par
         diagnostic.view === 'details' &&
         diagnostic.nodeId,
     ),
+  );
+});
+
+test('saved learning declarations project boundary hooks, observed calls and authorized consumers', () => {
+  const model = projectPolicyStructure({
+    experimentId: 'run',
+    definitionDigest: 'lock',
+    recipe: {
+      policy: {},
+      bindings: { worker: { plugin: 'example', config: {} } },
+    },
+    policy: {
+      schemaVersion: 'rsi.policy/v1',
+      id: 'test',
+      require: { worker: { contract: 'contract.example' } },
+      steps: [invoke('train'), invoke('heldOut')],
+      output: '${{ memory.ref }}',
+    },
+    memory: {
+      trigger: [{ afterStep: 'steps/train' }],
+      observe: { bindings: ['worker'], excludeSteps: ['steps/heldOut'] },
+      consumers: ['worker'],
+    },
+    reflection: {
+      trigger: [{ afterPolicy: true }],
+      observe: { bindings: ['memory'] },
+      targets: { worker: { resources: ['guidance'] } },
+    },
+  });
+  assert.equal(
+    model.availability.overall,
+    'complete',
+    JSON.stringify(model.diagnostics),
+  );
+  const memory = node(model, 'memory'),
+    reflection = node(model, 'reflection');
+  const observed = model.data.edges.filter(
+    (edge) => edge.kind === 'learning-observe',
+  );
+  assert.deepEqual(
+    observed.map((edge) => [edge.source.nodeId, edge.target.nodeId]),
+    [
+      [model.steps[0]!.id, memory.id],
+      [memory.id, reflection.id],
+    ],
+  );
+  assert.equal(
+    model.flow.edges.filter((edge) => edge.kind === 'learning-hook').length,
+    2,
+  );
+  assert.equal(
+    model.data.edges.filter((edge) => edge.kind === 'learning-consume').length,
+    2,
+  );
+  assert.equal(
+    model.data.edges.filter((edge) => edge.kind === 'learning-target').length,
+    2,
   );
 });

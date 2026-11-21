@@ -128,6 +128,8 @@ function parseCall(raw: unknown): CallSummary {
     callId: text(data.callId),
     parentCallId: nullable(data.parentCallId),
     bindingId: text(data.bindingId),
+    memoryRef: data.memoryRef == null ? null : text(data.memoryRef),
+    revisionRef: data.revisionRef == null ? null : text(data.revisionRef),
     triggerPath: data.triggerPath == null ? null : text(data.triggerPath),
     pluginId: text(data.pluginId),
     contractId: nullable(data.contractId),
@@ -413,7 +415,6 @@ export function parsePolicyStructure(raw: unknown): PolicyStructure {
           'loop',
           'foreach',
           'control',
-          'reflection',
         ]),
         location: text(item.location),
         scopeId: text(item.scopeId),
@@ -444,7 +445,21 @@ export function parsePolicyStructure(raw: unknown): PolicyStructure {
         const item = record(raw);
         return {
           id: text(item.id),
-          kind: choice(item.kind, ['step', 'entry', 'exit', 'failure']),
+          kind: choice(item.kind, [
+            'step',
+            'entry',
+            'exit',
+            'failure',
+            'learning',
+          ]),
+          ...(item.learningKind === undefined
+            ? {}
+            : {
+                learningKind: choice(item.learningKind, [
+                  'memory',
+                  'reflection',
+                ] as const),
+              }),
           stepId: nullable(item.stepId),
           scopeId: text(item.scopeId),
           label: text(item.label),
@@ -463,6 +478,7 @@ export function parsePolicyStructure(raw: unknown): PolicyStructure {
             'break',
             'continue',
             'fail',
+            'learning-hook',
           ]),
           label: nullable(item.label),
           location: text(item.location),
@@ -483,6 +499,8 @@ export function parsePolicyStructure(raw: unknown): PolicyStructure {
             'application',
             'loop',
             'item',
+            'memory',
+            'reflection',
           ]),
           stepId: nullable(item.stepId),
           label: text(item.label),
@@ -518,6 +536,9 @@ export function parsePolicyStructure(raw: unknown): PolicyStructure {
             'state-write',
             'item-binding',
             'output-mapping',
+            'learning-observe',
+            'learning-consume',
+            'learning-target',
           ]),
           dynamic: item.dynamic,
           label: nullable(item.label),

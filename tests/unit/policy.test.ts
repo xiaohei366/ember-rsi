@@ -476,7 +476,6 @@ test('foreach waits for launched branches after failure and dispatches no furthe
 test('parallel ancestors apply to nested serial foreach and Reflection', async () => {
   const definition = {
     ...base,
-    defaults: { reflection: { configFile: 'reflection.yaml' } },
     config_schema: { type: 'object' },
     steps: [
       {
@@ -494,7 +493,9 @@ test('parallel ancestors apply to nested serial foreach and Reflection', async (
             as: 'innerItem',
             key: '${{ innerItem }}',
             concurrency: 1,
-            steps: [{ id: 'reflect', type: 'reflection' }],
+            steps: [
+              { id: 'measure', type: 'if', if: true, then: { steps: [] } },
+            ],
           },
         ],
       },
@@ -505,9 +506,15 @@ test('parallel ancestors apply to nested serial foreach and Reflection', async (
     new Policy(definition).execute({
       ...options(),
       config: { concurrency: 2 },
-      reflect: async () => {
-        calls++;
-        return null;
+      learning: {
+        reflection: {
+          trigger: [{ afterStep: 'steps/outer/steps/inner/steps/measure' }],
+        },
+        memoryRef: () => null,
+        async execute() {
+          calls++;
+          return null;
+        },
       },
     }),
     /parallel/,
@@ -576,49 +583,75 @@ test('failed state validation preserves the previous state and nested values des
   assert.deepEqual(after, { active: false, count: 0, payload: {} });
   assert.equal(checkpoints, 0);
 });
-test('serial Reflection preserves result and following invocations observe the activation', async () => {
-  const contract = {
-    id: 'contract.work',
-    input_schema: true,
-    output_schema: true,
-  };
-  const policy = new Policy(
-    {
-      ...base,
-      require: { work: { contract: contract.id } },
-      defaults: { reflection: { configFile: 'reflection.yaml' } },
-      steps: [
-        { id: 'reflect', type: 'reflection' },
-        { id: 'after', type: 'invoke', use: 'work' },
-      ],
-      output: {
-        reflection: '${{ steps.reflect.output }}',
-        actual: '${{ steps.after.output }}',
+test('both hooks run serially after each boundary, pin outputs, and replay only unfinished hooks', async () => {
+  const policy = new Policy({
+    ...base,
+    steps: [
+      {
+        id: 'search',
+        type: 'loop',
+        maxIterations: 3,
+        steps: [
+          {
+            id: 'train',
+            type: 'state',
+            state: { count: '${{ state.count + 1 }}' },
+          },
+        ],
       },
-    },
-    { contracts: { contract: () => contract } },
-  );
-  let active = false;
-  const result = {
-    reflectionId: 'reflection-one',
-    status: 'activated',
-    reason: 'validated',
-    revisionRefs: { work: 'revision-one' },
-  };
-  assert.deepEqual(
-    await policy.execute({
+    ],
+    output: { memoryRef: '${{ memory.ref }}', count: '${{ state.count }}' },
+  });
+  const seen: string[] = [];
+  let memoryRef: string | null = null;
+  let interrupted = true;
+  let restore: JsonObject | undefined;
+  const run = () =>
+    policy.execute({
       ...options(),
-      reflect: async (path, state, parallel) => {
-        assert.equal(path, 'steps/reflect');
-        assert.equal(parallel, false);
-        assert.deepEqual(state, { count: 0 });
-        active = true;
-        return result;
+      restore,
+      checkpoint: async (snapshot) => {
+        restore = snapshot;
       },
-      invoke: async () => (active ? 'revision-one' : 'baseline'),
-    }),
-    { reflection: result, actual: 'revision-one' },
-  );
+      learning: {
+        memory: {
+          trigger: [
+            {
+              afterStep: 'steps/search/steps/train',
+              every: 2,
+              if: '${{ steps.train.output.count == 2 }}',
+            },
+            { afterIteration: 'steps/search', if: '${{ loop.index == 1 }}' },
+            { afterPolicy: true },
+          ],
+        },
+        reflection: { trigger: [{ afterIteration: 'steps/search' }] },
+        memoryRef: () => memoryRef,
+        async execute(kind, hookKey) {
+          if (
+            interrupted &&
+            hookKey === 'steps/search/iteration-1/@learning/reflection'
+          ) {
+            interrupted = false;
+            throw new Error('interrupted');
+          }
+          seen.push(hookKey);
+          if (kind === 'memory') memoryRef = 'snapshot-' + seen.length;
+          return { status: 'activated' };
+        },
+      },
+    });
+  await assert.rejects(run(), /interrupted/);
+  assert.deepEqual(await run(), { memoryRef: 'snapshot-5', count: 3 });
+  assert.deepEqual(seen, [
+    'steps/search/iteration-0/@learning/reflection',
+    'steps/search/iteration-1/train/@learning/memory',
+    'steps/search/iteration-1/@learning/memory',
+    'steps/search/iteration-1/@learning/reflection',
+    'steps/@learning/memory',
+  ]);
+  assert.deepEqual(await run(), { memoryRef: 'snapshot-5', count: 3 });
+  assert.equal(seen.length, 5);
 });
 
 test('state fields declared by patternProperties accept valid updates and enforce value types', async () => {
@@ -785,4 +818,41 @@ test('Policy.execute supports subclass overrides', async () => {
       config: { option: 2 },
     },
   );
+});
+test('enabling a hook on resume starts at the next unfinished step', async () => {
+  const policy = new Policy({
+    ...base,
+    steps: [
+      { id: 'first', type: 'state', state: { count: 1 } },
+      { id: 'next', type: 'state', state: { count: 2 } },
+    ],
+  });
+  let committed: JsonObject | undefined;
+  await assert.rejects(
+    policy.execute({
+      ...options(),
+      checkpoint: async (snapshot) => {
+        committed = snapshot;
+        throw new Error('stop after step commit');
+      },
+    }),
+    /stop after step commit/,
+  );
+  const visited: string[] = [];
+  const result = await policy.execute({
+    ...options(),
+    restore: committed,
+    learning: {
+      memory: {
+        trigger: [{ afterStep: 'steps/first' }, { afterStep: 'steps/next' }],
+      },
+      memoryRef: () => null,
+      async execute(_kind, _key, path) {
+        visited.push(path);
+        return { status: 'no-change' };
+      },
+    },
+  });
+  assert.equal(result, 2);
+  assert.deepEqual(visited, ['steps/next']);
 });

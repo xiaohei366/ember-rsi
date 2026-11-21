@@ -1,198 +1,53 @@
 import type { JsonObject } from '../json.js';
 import { defineContract } from '../contract.js';
-import { object } from '../../shared/json.js';
 
 export type MemoryInput = {
+  /** Immutable file-tree artifact for the active Memory, or null on the first invocation. */
   memoryRef: string | null;
   goal: string;
+  /** References to Runtime-prepared learning evidence snapshots. */
   evidenceRefs: string[];
-  editConstraints?: JsonObject;
-  comparison?: {
-    baselineCandidateRef: string;
-    probes: Record<
-      string,
-      { candidateRef: string; measurementRef: string; slot?: number }[]
-    >;
-    selection: {
-      candidateRef: string;
-      measurementRef: string;
-      decisionRef: string;
-    };
-  };
-  observations?: JsonObject | null;
-  sources?: { candidateRef: string }[];
+  editConstraints: JsonObject;
 };
+
 export type MemoryOutput =
-  | { status: 'updated'; memoryRef: string; changeRef: string; reason: string }
   | {
-      status: 'no-change' | 'failed';
-      memoryRef: string | null;
-      changeRef: null;
+      status: 'proposed';
+      resourceRef: string;
+      changeRef: string;
       reason: string;
-    };
+    }
+  | { status: 'no-change'; resourceRef: null; changeRef: null; reason: string };
+
+const reference = { type: 'string', minLength: 1 };
 
 export const memoryContract = defineContract({
   id: 'contract.memory',
   input_schema: {
-    additionalProperties: false,
-    properties: {
-      comparison: {
-        additionalProperties: false,
-        properties: {
-          baselineCandidateRef: {
-            minLength: 1,
-            type: 'string',
-          },
-          probes: {
-            additionalProperties: {
-              items: {
-                additionalProperties: false,
-                properties: {
-                  candidateRef: {
-                    minLength: 1,
-                    type: 'string',
-                  },
-                  measurementRef: {
-                    minLength: 1,
-                    type: 'string',
-                  },
-                  slot: {
-                    minimum: 0,
-                    type: 'integer',
-                  },
-                },
-                required: ['candidateRef', 'measurementRef'],
-                type: 'object',
-              },
-              minItems: 1,
-              type: 'array',
-            },
-            minProperties: 1,
-            type: 'object',
-          },
-          selection: {
-            additionalProperties: false,
-            properties: {
-              candidateRef: {
-                minLength: 1,
-                type: 'string',
-              },
-              decisionRef: {
-                minLength: 1,
-                type: 'string',
-              },
-              measurementRef: {
-                minLength: 1,
-                type: 'string',
-              },
-            },
-            required: ['candidateRef', 'measurementRef', 'decisionRef'],
-            type: 'object',
-          },
-        },
-        required: ['baselineCandidateRef', 'probes', 'selection'],
-        type: 'object',
-      },
-      editConstraints: {
-        type: 'object',
-      },
-      evidenceRefs: {
-        items: {
-          minLength: 1,
-          type: 'string',
-        },
-        type: 'array',
-      },
-      goal: {
-        minLength: 1,
-        type: 'string',
-      },
-      memoryRef: {
-        anyOf: [
-          {
-            minLength: 1,
-            type: 'string',
-          },
-          {
-            type: 'null',
-          },
-        ],
-      },
-      observations: {
-        type: ['object', 'null'],
-      },
-      sources: {
-        items: {
-          additionalProperties: false,
-          properties: {
-            candidateRef: {
-              minLength: 1,
-              type: 'string',
-            },
-          },
-          required: ['candidateRef'],
-          type: 'object',
-        },
-        type: 'array',
-      },
-    },
-    required: ['memoryRef', 'goal', 'evidenceRefs'],
     type: 'object',
+    additionalProperties: false,
+    required: ['memoryRef', 'goal', 'evidenceRefs', 'editConstraints'],
+    properties: {
+      memoryRef: { anyOf: [reference, { type: 'null' }] },
+      goal: { type: 'string', minLength: 1 },
+      evidenceRefs: { type: 'array', items: reference },
+      editConstraints: { type: 'object' },
+    },
   },
   output_schema: {
-    oneOf: [
-      {
-        additionalProperties: false,
-        properties: {
-          changeRef: {
-            minLength: 1,
-            type: 'string',
-          },
-          memoryRef: {
-            minLength: 1,
-            type: 'string',
-          },
-          reason: {
-            type: 'string',
-          },
-          status: {
-            const: 'updated',
-          },
-        },
-        required: ['status', 'memoryRef', 'changeRef', 'reason'],
+    oneOf: ['proposed', 'no-change'].map((status) => {
+      const ref = status === 'proposed' ? reference : { type: 'null' };
+      return {
         type: 'object',
-      },
-      {
         additionalProperties: false,
+        required: ['status', 'resourceRef', 'changeRef', 'reason'],
         properties: {
-          changeRef: {
-            type: 'null',
-          },
-          memoryRef: {
-            anyOf: [
-              {
-                minLength: 1,
-                type: 'string',
-              },
-              {
-                type: 'null',
-              },
-            ],
-          },
-          reason: {
-            type: 'string',
-          },
-          status: {
-            enum: ['no-change', 'failed'],
-          },
+          status: { const: status },
+          resourceRef: ref,
+          changeRef: ref,
+          reason: { type: 'string' },
         },
-        required: ['status', 'memoryRef', 'changeRef', 'reason'],
-        type: 'object',
-      },
-    ],
+      };
+    }),
   },
 });
-
-export const memoryComparisonSchema = object(
-  object(object(memoryContract.input_schema).properties).comparison,
-);

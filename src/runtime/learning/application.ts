@@ -34,6 +34,7 @@ import { renameFileWithRetry } from '../storage/rename-file.js';
 import {
   pathContains,
   resourcePath,
+  segments,
   validateEditableDestinations,
   canonicalDestinationPath,
 } from './resources.js';
@@ -139,35 +140,52 @@ function summary(revision: JsonObject): JsonObject {
     binding: revision.binding ?? null,
     pluginRef: revision.pluginRef ?? revision.pluginId ?? null,
     kind: revision.kind ?? 'legacy',
-    reflectionId: revision.reflectionId ?? null,
+    learningId: revision.learningId ?? null,
     applicationMetadata:
       Array.isArray(revision.sourceResources) &&
       typeof revision.rootRef === 'string' &&
       typeof revision.resourceRef === 'string',
   };
 }
-/** Owns all revision application validation; CLI is only a caller of this boundary. */
-export class RevisionApplication {
-  constructor(private readonly options: ApplicationOptions) {}
+/** Plan and apply immutable snapshots under the same gate as experiment startup. */
+class SnapshotApplication {
+  constructor(
+    private readonly options: ApplicationOptions,
+    private readonly collection: 'memories' | 'revisions',
+  ) {}
+
+  private summary(record: JsonObject): JsonObject {
+    if (this.collection === 'revisions') return summary(record);
+    return {
+      memoryID: record.ref ?? null,
+      experimentId: record.experimentId ?? null,
+      parentRef: record.parentRef ?? null,
+      kind: record.kind ?? null,
+      artifactRef: record.artifactRef ?? null,
+    };
+  }
 
   async list(experimentId?: string): Promise<JsonObject[]> {
     if (experimentId !== undefined) safeId(experimentId);
-    return (await this.options.facts.list('revisions'))
+    return (await this.options.facts.list(this.collection))
       .filter(
         (record) =>
           experimentId === undefined || record.experimentId === experimentId,
       )
-      .map(summary);
+      .map((record) => this.summary(record));
   }
   private async read(revisionID: string): Promise<JsonObject> {
     safeId(revisionID);
     try {
-      const record = await this.options.facts.read('revisions', revisionID);
+      const record = await this.options.facts.read(this.collection, revisionID);
       if (record.ref !== revisionID)
-        throw new Error('Revision identity mismatch');
+        throw new Error(`${this.collection} identity mismatch`);
       return record;
     } catch (error) {
-      if (absent(error)) throw new Error(`Unknown revision ID ${revisionID}`);
+      if (absent(error))
+        throw new Error(
+          `Unknown ${this.collection === 'revisions' ? 'revision' : 'memory'} ID ${revisionID}`,
+        );
       throw error;
     }
   }
@@ -226,7 +244,7 @@ export class RevisionApplication {
       )
     )
       throw new Error(
-        `Protected destination ${String(revision.binding)}${resource.pointer}: ${path}. Configure a user-owned Recipe binding, for example guidance: ./guidance/${String(revision.binding)}`,
+        `Protected destination ${String(revision.binding ?? 'memory')}${resource.pointer}: ${path}. Export to a dedicated directory with --to <directory>`,
       );
     const projectRoots = await Promise.all(
       [this.options.rootDirectory, packageRoot].map(canonicalDestinationPath),
@@ -254,33 +272,78 @@ export class RevisionApplication {
     )
       throw new Error(`Project directory is not a dedicated resource: ${path}`);
   }
-  private async plan(revision: JsonObject): Promise<Plan> {
-    const resources = this.resources(revision),
-      root = await this.read(string(revision.rootRef));
-    const rootResources = this.resources(root);
+  private async destinations(
+    record: JsonObject,
+    to?: string,
+  ): Promise<SourceResource[]> {
+    const revisionResources =
+      this.collection === 'revisions' ? this.resources(record) : [];
+    const root = await this.read(string(record.rootRef));
+    if (root.rootRef !== root.ref || root.experimentId !== record.experimentId)
+      throw new Error('Snapshot does not belong to its recorded root');
+    if (to !== undefined && !to.trim())
+      throw new Error('Expected a destination directory');
+    const target = to === undefined ? undefined : resolve(to);
+    if (target)
+      await this.validateDestination(
+        { pointer: '', kind: 'directory', path: target, artifactPath: '' },
+        record,
+      );
+    if (this.collection === 'memories') {
+      const source = root.sourceDirectory;
+      if (!target && (root.kind !== 'initial' || typeof source !== 'string'))
+        throw new Error(
+          'This Memory has no seed directory. Export with --to <directory>.',
+        );
+      const path = target ?? string(source);
+      if (!isAbsolute(path) || resolve(path) !== path)
+        throw new Error('Invalid Memory seed directory');
+      return [{ pointer: '', path, kind: 'directory', artifactPath: '' }];
+    }
+    const resources = revisionResources;
     if (
-      !['initial', 'generated'].includes(String(revision.kind)) ||
+      !['initial', 'generated'].includes(String(record.kind)) ||
       root.kind !== 'initial' ||
-      root.rootRef !== root.ref ||
-      root.binding !== revision.binding ||
-      root.policyScopeId !== revision.policyScopeId ||
-      root.experimentId !== revision.experimentId ||
-      root.pluginRef !== revision.pluginRef ||
-      canonical(rootResources) !== canonical(resources)
+      root.binding !== record.binding ||
+      root.policyScopeId !== record.policyScopeId ||
+      root.pluginRef !== record.pluginRef ||
+      canonical(this.resources(root)) !== canonical(resources)
     )
       throw new Error(
         'Revision destination mapping differs from its initial root',
       );
     if (!resources.length)
       throw new Error('Revision has no selected resources');
+    if (!target) return resources;
+    const direct = resources.length === 1 && resources[0]!.kind === 'directory';
+    return resources.map((resource) => ({
+      ...resource,
+      path: direct
+        ? target
+        : join(
+            target,
+            safeId(string(record.binding)),
+            ...segments(resource.pointer),
+          ),
+    }));
+  }
+  private async plan(revision: JsonObject, to?: string): Promise<Plan> {
+    const resources = await this.destinations(revision, to);
     await validateEditableDestinations(
       resources.map((resource) => ({
         ...resource,
-        binding: string(revision.binding),
+        binding:
+          this.collection === 'revisions' ? string(revision.binding) : 'memory',
       })),
     );
     const snapshot = parseFileTree(
-      await this.options.artifacts.readJson(string(revision.resourceRef)),
+      await this.options.artifacts.readJson(
+        string(
+          this.collection === 'memories'
+            ? revision.artifactRef
+            : revision.resourceRef,
+        ),
+      ),
     ).files;
     const changes: Change[] = [],
       directories: string[] = [],
@@ -327,7 +390,8 @@ export class RevisionApplication {
       const selected = snapshot.filter((file) =>
         resource.kind === 'file'
           ? file.path === resource.artifactPath
-          : file.path.startsWith(resource.artifactPath + '/'),
+          : !resource.artifactPath ||
+            file.path.startsWith(resource.artifactPath + '/'),
       );
       if (resource.kind === 'file' && selected.length !== 1)
         throw new Error(`File snapshot missing: ${resource.pointer}`);
@@ -336,7 +400,9 @@ export class RevisionApplication {
         const local =
           resource.kind === 'file'
             ? ''
-            : file.path.slice(resource.artifactPath.length + 1);
+            : resource.artifactPath
+              ? file.path.slice(resource.artifactPath.length + 1)
+              : file.path;
         if (local) validateEntry(local);
         const target = local
           ? resolve(resource.path, ...local.split('/'))
@@ -415,18 +481,28 @@ export class RevisionApplication {
       ),
     };
   }
-  async show(revisionID: string): Promise<JsonObject> {
+  async show(
+    revisionID: string,
+    { to }: { to?: string } = {},
+  ): Promise<JsonObject> {
     const revision = await this.read(revisionID);
     let plan: Plan | undefined;
     const restrictions: string[] = [];
     let snapshot: FileTreeFile[] = [];
-    if (typeof revision.resourceRef === 'string') {
+    const resourceRef =
+      this.collection === 'memories'
+        ? revision.artifactRef
+        : revision.resourceRef;
+    if (typeof resourceRef === 'string') {
       try {
         const tree = parseFileTree(
-          await this.options.artifacts.readJson(revision.resourceRef),
+          await this.options.artifacts.readJson(resourceRef),
         ).files;
         // Legacy records may show their own binding tree even when application metadata is absent.
-        const prefix = `bindings/${safeId(string(revision.binding))}/resources/`;
+        const prefix =
+          this.collection === 'memories'
+            ? ''
+            : `bindings/${safeId(string(revision.binding))}/resources/`;
         snapshot = tree.filter((file) => file.path.startsWith(prefix));
         if (Array.isArray(revision.sourceResources)) {
           const resources = this.resources(revision);
@@ -434,7 +510,8 @@ export class RevisionApplication {
             resources.some((resource) =>
               resource.kind === 'file'
                 ? file.path === resource.artifactPath
-                : file.path.startsWith(resource.artifactPath + '/'),
+                : !resource.artifactPath ||
+                  file.path.startsWith(resource.artifactPath + '/'),
             ),
           );
         }
@@ -456,7 +533,7 @@ export class RevisionApplication {
         try {
           gate.assertOwned();
           // Planning probes the source filesystem; keep startup excluded through cleanup.
-          const prepared = await this.plan(revision);
+          const prepared = await this.plan(revision, to);
           gate.assertOwned();
           plan = prepared;
         } catch (error) {
@@ -467,10 +544,16 @@ export class RevisionApplication {
       await gate.release();
     }
     return {
-      ...summary(revision),
+      ...this.summary(revision),
       rootRef: revision.rootRef ?? null,
       sourceResources: revision.sourceResources ?? [],
-      resourceRef: revision.resourceRef ?? null,
+      destinations:
+        plan?.resources.map(({ pointer, kind, path }) => ({
+          pointer,
+          kind,
+          path,
+        })) ?? [],
+      resourceRef: resourceRef ?? null,
       reason: revision.reason ?? null,
       parentRef: revision.parentRef ?? null,
       snapshot,
@@ -493,7 +576,10 @@ export class RevisionApplication {
       restrictions,
     };
   }
-  async apply(revisionID: string): Promise<JsonObject> {
+  async apply(
+    revisionID: string,
+    { to }: { to?: string } = {},
+  ): Promise<JsonObject> {
     const gate = await acquireResourceGate(this.options.directory);
     const completed: JsonObject[] = [];
     try {
@@ -505,7 +591,7 @@ export class RevisionApplication {
         throw new Error(
           `Active or unresolved experiments block application: ${blockers.join(', ')}. Retry after they finish or recover them first.`,
         );
-      const plan = await this.plan(await this.read(revisionID));
+      const plan = await this.plan(await this.read(revisionID), to);
       try {
         gate.assertOwned();
         for (const resource of plan.resources) {
@@ -582,17 +668,30 @@ export class RevisionApplication {
         }
       } catch (error) {
         throw new Error(
-          `Revision application failed; completed changes: ${canonical(completed)}; ${errorText(error)}`,
+          `${this.collection === 'revisions' ? 'Revision' : 'Memory'} application failed; completed changes: ${canonical(completed)}; ${errorText(error)}`,
           { cause: error },
         );
       }
       return {
-        revisionID,
+        [this.collection === 'revisions' ? 'revisionID' : 'memoryID']:
+          revisionID,
         status: completed.length ? 'applied' : 'unchanged',
         changes: completed,
       };
     } finally {
       await gate.release();
     }
+  }
+}
+
+export class RevisionApplication extends SnapshotApplication {
+  constructor(options: ApplicationOptions) {
+    super(options, 'revisions');
+  }
+}
+
+export class MemoryApplication extends SnapshotApplication {
+  constructor(options: ApplicationOptions) {
+    super(options, 'memories');
   }
 }

@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { JsonObject, JsonValue } from '../../contracts/json.js';
-import { object } from '../../shared/json.js';
+import { object, strings } from '../../shared/json.js';
 import { isStructureRangePreviewBounds } from '../../shared/observation/policy-range-preview.js';
 import type {
   PolicyStructure,
@@ -25,7 +25,6 @@ import {
   IfStep,
   InvokeStep,
   LoopStep,
-  ReflectionStep,
   StateStep,
   parseSteps,
   type Step,
@@ -45,6 +44,7 @@ export interface PolicyStructureInput {
   policy: JsonObject;
   recipe: JsonObject;
   reflection: JsonValue | null;
+  memory?: JsonValue | null;
 }
 
 interface PreviewSource {
@@ -106,6 +106,7 @@ interface Reference {
 interface StepRecord {
   step: Step;
   model: StructureStep;
+  selector: string;
   scope: StructureScope;
   exitId: string;
 }
@@ -388,6 +389,9 @@ class Projection {
       const record: StepRecord = {
         step,
         model,
+        selector: parentStepId
+          ? `${this.records.get(parentStepId)!.selector}/${region === 'then' || region === 'else' ? region + '/' : ''}steps/${step.id}`
+          : `steps/${step.id}`,
         scope,
         exitId: compound ? this.id(`${path}/$exit`) : id,
       };
@@ -409,15 +413,7 @@ class Projection {
           scopeId,
           label: `${step.id} exit`,
         });
-      this.node(
-        'step',
-        path,
-        step.id,
-        scopeId,
-        step.toJSON(),
-        step instanceof ReflectionStep ? this.input.reflection : null,
-        id,
-      );
+      this.node('step', path, step.id, scopeId, step.toJSON(), null, id);
       if (predecessor) this.flow(predecessor, id, 'sequence', path);
       if (step instanceof ControlStep) {
         const action = step.control.action;
@@ -498,6 +494,20 @@ class Projection {
     }
     const local = context.locals.get(root!);
     if (local) return { nodeId: local, path };
+    if (
+      root === 'memory' &&
+      context.roots.has(root) &&
+      !this.sourceGroups.has(root)
+    ) {
+      const node = this.node(
+        'memory',
+        '/$memory',
+        'Memory (disabled)',
+        this.rootId,
+        { ref: null },
+      );
+      this.sourceGroups.set(root, node.id);
+    }
     const global = context.roots.has(root!)
       ? this.sourceGroups.get(root!)
       : null;
@@ -948,17 +958,6 @@ class Projection {
           ['reason'],
           'expression',
         );
-      } else if (
-        step instanceof ReflectionStep &&
-        this.input.reflection === null
-      ) {
-        this.diagnostic(
-          'details',
-          id,
-          path,
-          'Initial saved Reflection configuration is unavailable.',
-          'missing-source',
-        );
       }
       if (!(step instanceof ControlStep)) frame.completed.add(step.id);
     }
@@ -974,6 +973,117 @@ class Projection {
         output.label ?? null,
       );
     return context;
+  }
+
+  private learning(root: StructureScope): void {
+    const records = new Map(
+      [...this.records.values()].map((record) => [record.selector, record]),
+    );
+    for (const kind of ['memory', 'reflection'] as const) {
+      if (!this.input[kind]) continue;
+      const module = object(this.input[kind]);
+      const location = `/$${kind}`;
+      const label = kind === 'memory' ? 'Memory' : 'Reflection';
+      const node = this.node(
+        kind,
+        location,
+        label,
+        root.id,
+        module,
+        module.config ?? null,
+      );
+      this.sourceGroups.set(kind, node.id);
+      const observe = object(module.observe ?? {});
+      const bindings = new Set(strings(observe.bindings ?? []));
+      const observed = new Set(strings(observe.steps ?? []));
+      const exclude = new Set(strings(observe.excludeSteps ?? []));
+      const useDefaults =
+        observe.bindings === undefined && observe.steps === undefined;
+      const receivers = new Set(
+        kind === 'memory'
+          ? strings(module.consumers ?? [])
+          : Object.keys(object(module.targets ?? {})),
+      );
+      const connect = (
+        source: string,
+        target: string,
+        type: StructureDataEdge['kind'],
+        name: string,
+      ): void => {
+        this.edge(
+          source,
+          this.port(source, 'output', [name], location, name),
+          target,
+          this.port(target, 'input', [name], location, name),
+          type,
+          location,
+        );
+      };
+      for (const record of records.values()) {
+        const { step, model, selector } = record;
+        if (!(step instanceof InvokeStep)) continue;
+        const binding = this.model.bindings.find(
+          (b) => b.name === step.bindingName,
+        );
+        if (
+          !exclude.has(selector) &&
+          (bindings.has(step.bindingName) ||
+            observed.has(selector) ||
+            (useDefaults && binding && binding.contract !== 'contract.agent'))
+        )
+          connect(model.id, node.id, 'learning-observe', 'evidence');
+        if (receivers.has(step.bindingName))
+          connect(
+            node.id,
+            model.id,
+            kind === 'memory' ? 'learning-consume' : 'learning-target',
+            kind === 'memory' ? 'memory' : 'resources',
+          );
+      }
+      if (kind === 'reflection' && (bindings.has('memory') || useDefaults)) {
+        const memory = this.sourceGroups.get('memory');
+        if (memory) connect(memory, node.id, 'learning-observe', 'evidence');
+      }
+      for (const [index, raw] of (Array.isArray(module.trigger)
+        ? module.trigger
+        : []
+      ).entries()) {
+        const trigger = object(raw);
+        const record = records.get(
+          String(trigger.afterStep ?? trigger.afterIteration),
+        );
+        const iteration = !!trigger.afterIteration;
+        const scope =
+          iteration && record
+            ? this.scopes.get(record.model.childScopeIds[0]!)
+            : undefined;
+        const source = trigger.afterPolicy
+          ? root.exitId
+          : (scope?.exitId ?? record?.exitId);
+        if (!source) throw new Error('Saved learning trigger has no boundary');
+        const path = `${location}/trigger/${index}`;
+        const id = this.id(path);
+        this.model.flow.nodes.push({
+          id,
+          kind: 'learning',
+          learningKind: kind,
+          stepId: null,
+          scopeId: scope?.id ?? record?.scope.id ?? root.id,
+          label,
+        });
+        this.flow(
+          source,
+          id,
+          'learning-hook',
+          path,
+          iteration
+            ? 'After iteration'
+            : trigger.afterPolicy
+              ? 'After Policy'
+              : 'After step',
+        );
+      }
+    }
   }
 
   run(steps: readonly Step[]): PolicyStructure {
@@ -1039,10 +1149,11 @@ class Projection {
         configuration: binding.config ?? null,
       });
     }
+    this.learning(root);
     const context: Context = {
       frames: [],
       locals: new Map(),
-      roots: new Set(['application', 'config', 'input', 'state']),
+      roots: new Set(['application', 'config', 'input', 'state', 'memory']),
     };
     this.template(
       this.input.policy.input ?? {},

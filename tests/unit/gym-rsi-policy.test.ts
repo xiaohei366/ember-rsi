@@ -124,13 +124,6 @@ test('policy.gym-rsi promotes after search and exposes the effective candidate',
                   : 'm-val',
           };
         }
-        if (name === 'memoryUpdater')
-          return {
-            status: 'updated',
-            memoryRef: 'wiki',
-            changeRef: 'memory-change',
-            reason: 'Training evidence recorded.',
-          };
         if (name === 'proposer')
           return {
             status: 'created',
@@ -171,8 +164,9 @@ test('policy.gym-rsi promotes after search and exposes the effective candidate',
 
   assert.equal(calls.at(-1)!.name, 'promotion');
   assert.deepEqual(
-    calls.find((call) => call.name === 'memoryUpdater')!.input.evidenceRefs,
-    ['m-train'],
+    object(object(object(policy.toJSON().defaults).memory).observe)
+      .excludeSteps,
+    ['baseline', 'validate', 'promotion'],
   );
   assert.equal(result.searchCandidateRef, 'c1');
   assert.equal(result.effectiveRef, 'c1');
@@ -208,13 +202,6 @@ test('policy.gym-rsi keeps the original incumbent effective when promotion is de
                   : 'm-val',
           };
         }
-        if (name === 'memoryUpdater')
-          return {
-            status: 'no-change',
-            memoryRef: input.memoryRef,
-            changeRef: null,
-            reason: 'No update.',
-          };
         if (name === 'proposer')
           return {
             status: 'created',
@@ -271,13 +258,6 @@ test('policy.gym-rsi always runs its explicit promotion step', async () => {
         const input = object(raw);
         if (name === 'evaluator')
           return { action: 'evaluate', measurementRef: 'm-train' };
-        if (name === 'memoryUpdater')
-          return {
-            status: 'no-change',
-            memoryRef: input.memoryRef,
-            changeRef: null,
-            reason: 'No update.',
-          };
         if (name === 'proposer')
           return {
             status: 'no-change',
@@ -328,13 +308,6 @@ test('policy.gym-rsi advances a tied candidate to holdout', async () => {
             measurementRef: taskId === 'train' ? 'm-train' : 'm-val',
           };
         }
-        if (name === 'memoryUpdater')
-          return {
-            status: 'no-change',
-            memoryRef: input.memoryRef,
-            changeRef: null,
-            reason: 'No update.',
-          };
         if (name === 'proposer')
           return {
             status: 'created',
@@ -400,13 +373,6 @@ test('policy.gym-rsi does not advance an infeasible tie to holdout', async () =>
             measurementRef: taskId === 'train' ? 'm-train' : 'm-val',
           };
         }
-        if (name === 'memoryUpdater')
-          return {
-            status: 'no-change',
-            memoryRef: input.memoryRef,
-            changeRef: null,
-            reason: 'No update.',
-          };
         if (name === 'proposer')
           return {
             status: 'created',
@@ -471,13 +437,6 @@ test('policy.gym-rsi keeps the incumbent when validation regresses', async () =>
             measurementRef: taskId === 'train' ? 'm-train' : 'm-val',
           };
         }
-        if (name === 'memoryUpdater')
-          return {
-            status: 'no-change',
-            memoryRef: input.memoryRef,
-            changeRef: null,
-            reason: 'No update.',
-          };
         if (name === 'proposer')
           return {
             status: 'created',

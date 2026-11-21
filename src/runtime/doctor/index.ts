@@ -1,4 +1,11 @@
 import { mkdtemp, mkdir, rm, stat, access } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { loadMemorySeed } from '../learning/memory.js';
+import {
+  selectedResourceFields,
+  pointerValue,
+  pathContains,
+} from '../learning/resources.js';
 import { tmpdir } from 'node:os';
 import { constants } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -124,20 +131,22 @@ export async function doctorRecipe(
   };
   const redact = redactor({
     recipe: recipe.toJSON(),
-    reflection: recipe.reflection?.implementation.config ?? {},
+    reflection: recipe.reflection?.config ?? {},
+    memory: recipe.memory?.config ?? {},
   });
   const bindings: DoctorBinding[] = [
     recipe.application,
     ...Object.values(recipe.bindings),
   ];
-  if (recipe.reflection) {
-    const implementation = recipe.reflection.implementation;
-    bindings.push({
-      name: 'reflection',
-      pluginId: implementation.ref,
-      definition: runtime.registry.get(implementation.ref),
-      config: implementation.config,
-    });
+  for (const name of ['memory', 'reflection'] as const) {
+    const module = recipe[name];
+    if (module)
+      bindings.push({
+        name,
+        pluginId: module.plugin,
+        definition: runtime.registry.get(module.plugin),
+        config: module.config,
+      });
   }
   const temporary = await mkdtemp(join(tmpdir(), 'arsi-doctor-'));
   const isolated = new Manager({
@@ -222,6 +231,65 @@ export async function doctorRecipe(
     return value;
   };
   try {
+    for (const name of recipe.disabledLearning)
+      add({
+        id: `${name}.status`,
+        status: 'unchecked',
+        reason: 'Disabled by the Recipe or Policy.',
+      });
+    const seed = recipe.memory?.seed;
+    if (seed)
+      add(
+        await runDoctorCheck(
+          'memory.seed',
+          async () => {
+            if (seed.fromExperiment) {
+              await loadMemorySeed(
+                runtime.manager.facts,
+                runtime.manager.artifacts,
+                seed.fromExperiment,
+                runtime.manager.directory,
+              );
+            } else if (seed.directory) {
+              if (!(await stat(seed.directory)).isDirectory())
+                throw new Error('Memory seed must be a directory');
+              await access(seed.directory, constants.R_OK);
+            }
+          },
+          { signal },
+        ),
+      );
+    if (recipe.reflection) {
+      const builtins = ['policies', 'plugins'].map((kind) =>
+        fileURLToPath(new URL(`../../${kind}/`, import.meta.url)),
+      );
+      const paths = Object.entries(recipe.reflection.targets).flatMap(
+        ([name, target]) => {
+          const binding = recipe.bindings[name]!;
+          return selectedResourceFields(
+            binding.definition.configSchema,
+            binding.config,
+            target.resources,
+          ).map((field) => pointerValue(binding.config, field.pointer));
+        },
+      );
+      const protectedTarget = paths.some(
+        (path) =>
+          typeof path === 'string' &&
+          builtins.some((root) => pathContains(root, path)),
+      );
+      add({
+        id: 'reflection.targets',
+        status: 'passed',
+        ...(protectedTarget
+          ? {
+              details: {
+                note: 'Revisions activate in this experiment. Export built-in resources with arsi reflection apply <id> --to <directory>.',
+              },
+            }
+          : {}),
+      });
+    }
     for (const [index, binding] of bindings.entries()) {
       signal.throwIfAborted();
       const directory = join(temporary, `probe-${index}`);

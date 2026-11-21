@@ -1,11 +1,8 @@
 import { OperationRejectedError } from '../../contracts/runtime/errors.js';
 import { lstat, mkdir, realpath } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import {
-  agentContract,
-  memoryContract,
-  reflectionContract,
-} from '../../contracts/index.js';
+import { agentContract } from '../../contracts/index.js';
+import { readMemorySnapshot, type ActiveMemory } from '../learning/memory.js';
 import type {
   Binding,
   RuntimeContext,
@@ -28,6 +25,7 @@ interface CallExecutorOptions {
   registry: Registry;
   facts: FactStore;
   revisionRefs: Readonly<JsonObject>;
+  memoryForBinding?(bindingId: string): ActiveMemory | null;
   retryCalls?: ReadonlyMap<string, JsonObject>;
   retryRef?: string;
   context(binding: string, id: string, parent: RuntimeContext): RuntimeContext;
@@ -57,8 +55,38 @@ export interface CallExecutor {
   unconfirmed(): Promise<void>;
 }
 
+export function callIdentity(
+  experiment: string,
+  bindingId: string,
+  path: string,
+  input: JsonValue,
+  attempt?: string,
+): string {
+  return (
+    'call-' +
+    digest({
+      experiment,
+      bindingId,
+      path,
+      input,
+      ...(attempt ? { attempt } : {}),
+    }).slice(0, 32)
+  );
+}
+
 export function createCallExecutor(options: CallExecutorOptions): CallExecutor {
   const { id, context, charge } = options;
+  const facts = options.facts;
+  const learningFacts: FactStore = {
+    read: facts.read.bind(facts),
+    list: facts.list.bind(facts),
+    ...(facts.scan ? { scan: facts.scan.bind(facts) } : {}),
+    async write(kind, key, value) {
+      if (kind === 'candidates')
+        throw new Error('Learning calls cannot write Application candidates');
+      await facts.write(kind, key, value);
+    },
+  };
   const active = new Map<string, Promise<JsonValue>>();
   const uncertain = new Map<string, () => Promise<void>>();
   const childFailures = new Map<string, unknown>();
@@ -85,6 +113,12 @@ export function createCallExecutor(options: CallExecutorOptions): CallExecutor {
       json(input);
       input = structuredClone(input);
       validate(definition.contract.input_schema, input, `${bindingId} input`);
+      if (
+        optionalCalls.has(caller.callId) &&
+        definition.contract.id === 'contract.application' &&
+        ['commit', 'initialize'].includes(String(object(input).action))
+      )
+        throw new Error('Learning calls cannot create Application candidates');
       agentInput =
         definition.contract.id === agentContract.id ? object(input) : undefined;
       project =
@@ -127,19 +161,6 @@ export function createCallExecutor(options: CallExecutorOptions): CallExecutor {
             `artifact:${basename(dirname(project))}`,
           )
         : undefined;
-    const identity = (value: JsonValue): string =>
-      'call-' +
-      digest({
-        experiment: id,
-        bindingId,
-        path: path ?? caller.callId,
-        input: value,
-        ...(bindingId === '_application' &&
-        ['acquire', 'release'].includes(String(object(input).action)) &&
-        caller.idempotencyKey !== caller.callId
-          ? { attempt: caller.idempotencyKey }
-          : {}),
-      }).slice(0, 32);
     const policyReceipt =
       caller.callId === 'root' && path !== undefined
         ? options.retryCalls?.get(path)
@@ -149,7 +170,17 @@ export function createCallExecutor(options: CallExecutorOptions): CallExecutor {
     const callId =
       typeof policyReceipt?.callId === 'string'
         ? policyReceipt.callId
-        : identity(input);
+        : callIdentity(
+            id,
+            bindingId,
+            path ?? caller.callId,
+            input,
+            bindingId === '_application' &&
+              ['acquire', 'release'].includes(String(object(input).action)) &&
+              caller.idempotencyKey !== caller.callId
+              ? caller.idempotencyKey
+              : undefined,
+          );
     const existing = active.get(callId);
     if (existing) return existing;
     const checkedOutput = (value: unknown): JsonValue => {
@@ -206,6 +237,12 @@ export function createCallExecutor(options: CallExecutorOptions): CallExecutor {
       const binding = options.binding(bindingId);
       if (!binding) throw new Error(`Unknown binding ${bindingId}`);
       const revisionRef = options.revisionRefs[bindingId];
+      const memory = options.memoryForBinding?.(bindingId) ?? null;
+      const artifacts = ctx.artifacts;
+      let snapshot: ReturnType<typeof readMemorySnapshot> | undefined;
+      ctx = ctx.extend({
+        readMemory: () => (snapshot ??= readMemorySnapshot(artifacts, memory)),
+      });
       const info: CallEventInfo = {
         experimentId: id,
         callId,
@@ -213,24 +250,23 @@ export function createCallExecutor(options: CallExecutorOptions): CallExecutor {
         path: path ?? caller.callId,
         parentCallId: caller.callId,
         bindingRef: binding.plugin,
+        memoryRef: memory?.ref ?? null,
         revisionRef: typeof revisionRef === 'string' ? revisionRef : null,
       };
-      const isMemory = definition.contract.id === memoryContract.id;
       if (
-        isMemory ||
-        definition.contract.id === reflectionContract.id ||
+        bindingId === '_memory' ||
+        bindingId === '_reflection' ||
         optionalCalls.has(caller.callId)
-      )
-        optionalCalls.add(callId);
-      // A handled Memory failure is a completed update boundary, even when its
-      // Policy checkpoint was interrupted. Reuse its old reference on resume.
-      if (
-        isMemory &&
-        prior?.status === 'failed' &&
-        prior.output !== undefined
       ) {
-        const output = checkedOutput(prior.output);
-        if (object(output).status === 'failed') return output;
+        optionalCalls.add(callId);
+        ctx = ctx.extend({
+          facts: learningFacts,
+          async recordCandidate() {
+            throw new Error(
+              'Learning calls cannot create Application candidates',
+            );
+          },
+        });
       }
       const lease = await options.operation(bindingId, binding);
       ctx = ctx.extend({ event: lease.event });
@@ -314,7 +350,6 @@ export function createCallExecutor(options: CallExecutorOptions): CallExecutor {
         });
         const parentSignal = ctx.signal;
         let output: JsonValue;
-        let memoryFailed = false;
         try {
           const decision = await ctx.event.waterfall(
             'rsi/before-call',
@@ -333,12 +368,11 @@ export function createCallExecutor(options: CallExecutorOptions): CallExecutor {
           if (decision.kind === 'reject')
             throw new Error(`Call admission rejected: ${decision.reason}`);
           output = checkedOutput(await lease.operation.execute(input, ctx));
-          memoryFailed = isMemory && object(output).status === 'failed';
+          if (ctx.scope) ctx.signal.throwIfAborted();
           if (
             !(await commit({
-              status: memoryFailed ? 'failed' : 'succeeded',
+              status: 'succeeded',
               output,
-              ...(memoryFailed ? { error: object(output).reason! } : {}),
             }))
           )
             throw new Error(`Call ${callId} outcome remains unconfirmed`);
@@ -398,26 +432,18 @@ export function createCallExecutor(options: CallExecutorOptions): CallExecutor {
           uncertain.delete(callId);
         }
         // Notification errors do not undo a settled optional update.
-        const eventName = memoryFailed
-          ? 'rsi/call-failed'
-          : 'rsi/call-succeeded';
+        const eventName = 'rsi/call-succeeded';
         try {
-          if (memoryFailed)
-            await ctx.event.parallel('rsi/call-failed', {
-              ...info,
-              status: 'failed',
-            });
-          else
-            await ctx.event.parallel('rsi/call-succeeded', {
-              ...info,
-              status: 'succeeded',
-              ...(output &&
-              typeof output === 'object' &&
-              !Array.isArray(output) &&
-              typeof output.measurementRef === 'string'
-                ? { measurementRef: output.measurementRef }
-                : {}),
-            });
+          await ctx.event.parallel('rsi/call-succeeded', {
+            ...info,
+            status: 'succeeded',
+            ...(output &&
+            typeof output === 'object' &&
+            !Array.isArray(output) &&
+            typeof output.measurementRef === 'string'
+              ? { measurementRef: output.measurementRef }
+              : {}),
+          });
         } catch (error) {
           if (optionalCalls.has(callId)) options.diagnose(eventName, error);
           else

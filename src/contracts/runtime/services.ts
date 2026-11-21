@@ -4,6 +4,11 @@ import type { EventPipeline } from './events.js';
 import type { AgentInput, AgentOutput } from '../plugin-types/agent.js';
 import type {} from './context.js';
 
+export interface MemorySnapshot {
+  readonly ref: string;
+  readonly artifactRef: string;
+  readonly files: Readonly<Record<string, string>>;
+}
 export interface ArtifactStore {
   putJson(value: unknown): Promise<string>;
   readJson(ref: string): Promise<JsonValue>;

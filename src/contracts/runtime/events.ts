@@ -42,6 +42,7 @@ export interface CallEventInfo {
   readonly path: string;
   readonly bindingRef: string;
   readonly revisionRef: string | null;
+  readonly memoryRef: string | null;
 }
 export interface BeforeCallEvent extends CallEventInfo {
   readonly status: 'running';
@@ -91,6 +92,15 @@ export interface MeasurementRecordedEvent {
   readonly callId: string;
   readonly bindingId: string;
   readonly measurementRef: string;
+}
+export interface MemoryUpdatedEvent {
+  readonly experimentId: string;
+  readonly learningId: string;
+  readonly memoryRef: string | null;
+  readonly parentRef: string | null;
+  readonly artifactRef: string | null;
+  readonly status: 'activated' | 'no-change' | 'skipped' | 'rejected';
+  readonly triggerPath: string;
 }
 export interface RevisionActivatedEvent {
   readonly experimentId: string;
@@ -144,6 +154,8 @@ declare module '@deepseek-ai/cordis' {
     /** @mode emit Notify a saved measurement; errors are diagnostics. */
     'rsi/measurement-recorded'(event: MeasurementRecordedEvent): void;
     /** @mode emit Notify committed activation; errors do not roll it back. */
+    'rsi/memory-updated'(event: MemoryUpdatedEvent): void;
+    /** @mode emit Notify committed revision activation. */
     'rsi/revision-activated'(event: RevisionActivatedEvent): void;
   }
 }

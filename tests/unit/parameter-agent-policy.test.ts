@@ -49,13 +49,12 @@ test('policy.parameter-agent loads default learning resources with either Reflec
   };
   const options = { sourcePath: join(root, 'recipe.yaml') };
   const standard = await Recipe.fromJSON(declaration, registry, options);
-  assert.equal(standard.policyConfig.memory, false);
-  assert.equal(standard.policyConfig.reflection, false);
+  assert.equal(standard.memory, undefined);
+  assert.equal(standard.reflection, undefined);
   assert.equal(
     standard.bindings.proposer!.config.prompt,
     join(root, 'prompt.md'),
   );
-  assert.ok(standard.reflection);
   const guidance = standard.bindings.proposer!.config.guidance;
   assert.equal(typeof guidance, 'string');
   assert.match(
@@ -63,15 +62,19 @@ test('policy.parameter-agent loads default learning resources with either Reflec
     /Configuration search guidance/,
   );
   for (const reflection of [false, true]) {
-    declaration.policy.config = { reflection };
-    const loaded = await Recipe.fromJSON(declaration, registry, options);
-    assert.ok(loaded.reflection);
+    const loaded = await Recipe.fromJSON(
+      { ...declaration, reflection: { enabled: reflection } },
+      registry,
+      options,
+    );
+    assert.equal(Boolean(loaded.reflection), reflection);
     const reloaded = await Recipe.fromJSON(loaded.toJSON(), registry, options);
     assert.deepEqual(reloaded.reflection, loaded.reflection);
   }
-  declaration.policy.config = { reflection: false };
+
   const missingGuidance = {
     ...declaration,
+    reflection: { enabled: true },
     bindings: {
       ...declaration.bindings,
       proposer: { config: { guidance: './missing-guidance' } },
@@ -115,7 +118,7 @@ test('policy.parameter-agent follows selector decisions and returns the measured
             return { measurementRef: `m-${input.candidateRef}` };
           }
           if (binding === 'proposer') {
-            assert.equal(input.memoryRef, null);
+            assert.equal(Object.hasOwn(input, 'memoryRef'), false);
             if (input.parent === 'baseline') {
               assert.equal(input.maxCandidates, 2);
               assert.deepEqual(input.evidenceRefs, ['m-baseline']);

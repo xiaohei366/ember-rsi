@@ -6,132 +6,25 @@ import type {
   JsonValue,
   JsonSchema,
 } from '../../contracts/index.js';
-import { object, string, strings, digest } from '../../shared/json.js';
-import { validate } from '../../shared/schema.js';
+import { object, string, digest } from '../../shared/json.js';
 import { configPathFields, isResourceUrl } from '../../shared/paths.js';
+import { pointerParent } from '../loaders/config.js';
 import type { Recipe } from '../loaders/recipe.js';
 import type { Registry } from '../registry/index.js';
-import type { ReflectionConfig } from '../revisions/validation.js';
+import {
+  parseLockedConfig,
+  type MemoryConfig,
+  type ReflectionConfig,
+} from '../learning/schema.js';
 import { inside } from '../storage/index.js';
 
-export const definitionLockVersion = 'rsi.definition-lock/v2';
+export const definitionLockVersion = 'rsi.definition-lock/v3';
 
-/** Validate persisted Reflection data without consulting mutable source files. */
-export function parseLockedReflection(value: JsonValue): ReflectionConfig {
-  const data = object(value, 'locked Reflection');
-  validate(
-    {
-      type: 'object',
-      required: [
-        'path',
-        'digest',
-        'evidence',
-        'targets',
-        'goal',
-        'implementation',
-        'budget',
-      ],
-      properties: {
-        path: { type: 'string' },
-        digest: { type: 'string' },
-        evidence: { type: 'array', items: { type: 'string' } },
-        targets: {
-          type: 'object',
-          additionalProperties: {
-            type: 'object',
-            required: ['resources'],
-            properties: {
-              resources: { type: 'array', items: { type: 'string' } },
-            },
-            additionalProperties: false,
-          },
-        },
-        goal: { type: 'string' },
-        implementation: {
-          type: 'object',
-          required: ['contract', 'ref', 'config'],
-          properties: {
-            contract: { const: 'contract.reflection' },
-            ref: { type: 'string' },
-            config: { type: 'object' },
-          },
-          additionalProperties: false,
-        },
-        budget: {
-          type: 'object',
-          properties: {
-            modelCalls: { type: 'integer', minimum: 0 },
-            elapsedWallMs: { type: 'integer', minimum: 1 },
-            evidenceBytes: {
-              type: 'integer',
-              minimum: 1,
-              maximum: Number.MAX_SAFE_INTEGER,
-            },
-          },
-          additionalProperties: false,
-        },
-      },
-      additionalProperties: false,
-    },
-    data,
-    'locked Reflection',
-  );
-  const implementation = object(data.implementation);
-  const budget = object(data.budget);
-  return {
-    path: string(data.path),
-    digest: string(data.digest),
-    evidence: strings(data.evidence),
-    goal: string(data.goal),
-    targets: Object.fromEntries(
-      Object.entries(object(data.targets)).map(([name, target]) => [
-        name,
-        { resources: strings(object(target).resources) },
-      ]),
-    ),
-    implementation: {
-      contract: string(implementation.contract),
-      ref: string(implementation.ref),
-      config: object(implementation.config),
-    },
-    budget: {
-      ...(budget.modelCalls === undefined
-        ? {}
-        : { modelCalls: Number(budget.modelCalls) }),
-      ...(budget.elapsedWallMs === undefined
-        ? {}
-        : { elapsedWallMs: Number(budget.elapsedWallMs) }),
-      ...(budget.evidenceBytes === undefined
-        ? {}
-        : { evidenceBytes: Number(budget.evidenceBytes) }),
-    },
-  };
+export function parseLockedMemory(value: JsonValue): MemoryConfig {
+  return parseLockedConfig('memory', value);
 }
-
-function pointerParent(
-  value: JsonObject,
-  pointer: string,
-): { parent: JsonObject | JsonValue[]; key: string } {
-  const parts = pointer
-    .slice(1)
-    .split('/')
-    .map((part) => part.replaceAll('~1', '/').replaceAll('~0', '~'));
-  const key = parts.pop()!;
-  let current: JsonValue = value;
-  for (const part of parts) {
-    const container: JsonObject | JsonValue[] = Array.isArray(current)
-      ? current
-      : object(current);
-    if (!Object.hasOwn(container, part))
-      throw new Error(`Missing configuration path ${pointer}`);
-    current = Array.isArray(container)
-      ? container[Number(part)]!
-      : container[part]!;
-  }
-  const parent = Array.isArray(current) ? current : object(current);
-  if (!Object.hasOwn(parent, key))
-    throw new Error(`Missing configuration path ${pointer}`);
-  return { parent, key };
+export function parseLockedReflection(value: JsonValue): ReflectionConfig {
+  return parseLockedConfig('reflection', value);
 }
 
 export function readResourceOrigins(
@@ -190,7 +83,8 @@ export async function lockDefinition(
     config: JsonObject,
     owner: string,
     schema?: JsonSchema,
-  ): Promise<void> => {
+    prefix = '',
+  ): Promise<JsonObject> => {
     if (id) plugins[id] = registry.identity(id);
     const sourceConfig = structuredClone(config);
     const localResources: JsonObject = {};
@@ -198,12 +92,13 @@ export async function lockDefinition(
       schema ?? registry.get(id).configSchema,
       config,
     )) {
+      const pointer = prefix + field.pointer;
       const { parent, key } = pointerParent(config, field.pointer);
       const source = string(
         Array.isArray(parent) ? parent[Number(key)] : parent[key],
       );
       const origins = object(resourceOrigins[owner] ?? {});
-      origins[field.pointer] = source;
+      origins[pointer] = source;
       resourceOrigins[owner] = origins;
       if (isResourceUrl(source)) continue;
       const info = await lstat(source);
@@ -211,8 +106,8 @@ export async function lockDefinition(
         info.isSymbolicLink() ||
         (field.kind === 'file' ? !info.isFile() : !info.isDirectory())
       )
-        throw new Error(`Invalid locked resource ${owner}${field.pointer}`);
-      const slot = digest({ owner, pointer: field.pointer }).slice(0, 32);
+        throw new Error(`Invalid locked resource ${owner}${pointer}`);
+      const slot = digest({ owner, pointer }).slice(0, 32);
       const artifactRef =
         field.kind === 'directory'
           ? await artifacts.capture(source)
@@ -233,7 +128,7 @@ export async function lockDefinition(
           : join(attemptDirectory, slot);
       await restoreResource(artifacts, target, artifactRef);
       resources.push({ directory: target, artifactRef });
-      localResources[field.pointer] = artifactRef;
+      localResources[pointer] = artifactRef;
       const lockedPath =
         field.kind === 'directory' ? target : join(target, basename(source));
       if (Array.isArray(parent)) parent[Number(key)] = lockedPath;
@@ -241,6 +136,7 @@ export async function lockDefinition(
     }
     if (id)
       bindingVersions[owner] = digest({ id, sourceConfig, localResources });
+    return localResources;
   };
   await capture(
     '',
@@ -258,16 +154,38 @@ export async function lockDefinition(
     const binding = object(entry);
     await capture(string(binding.plugin), object(binding.config), name);
   }
-  const reflection: JsonObject | null = recipe.reflection
-    ? JSON.parse(JSON.stringify(recipe.reflection))
-    : null;
-  if (reflection) {
-    const implementation = object(reflection.implementation);
+  const learning: JsonObject = { memory: null, reflection: null };
+  for (const kind of ['memory', 'reflection'] as const) {
+    const module = recipe[kind];
+    if (!module) continue;
+    const data = object(structuredClone(module));
     await capture(
-      string(implementation.ref),
-      object(implementation.config),
-      '_reflection',
+      module.plugin,
+      object(data.config),
+      '_' + kind,
+      undefined,
+      '/config',
     );
+    const fields = await capture('', data, '_' + kind, {
+      type: 'object',
+      properties: {
+        goalFile: { type: 'string', 'x-rsi-path': 'file' },
+        seed: {
+          type: 'object',
+          properties: {
+            directory: { type: 'string', 'x-rsi-path': 'directory' },
+          },
+        },
+      },
+    });
+    if (fields['/seed/directory'])
+      data.seedArtifactRef = fields['/seed/directory']!;
+    data.digest = digest({
+      configuration: module.digest,
+      pluginResources: bindingVersions['_' + kind],
+      fields,
+    });
+    learning[kind] = data;
   }
   const locked: JsonObject = {
     schemaVersion: definitionLockVersion,
@@ -279,7 +197,7 @@ export async function lockDefinition(
     bindingVersions,
     resources,
     resourceOrigins,
-    reflection,
+    ...learning,
     ...(retry === undefined ? {} : { retry }),
   };
   return { ...locked, digest: digest(locked) };
@@ -306,7 +224,7 @@ async function restoreResource(
 export function assertDefinitionLock(locked: JsonObject): void {
   if (locked.schemaVersion !== definitionLockVersion)
     throw new Error(
-      'This experiment predates resumable Policy checkpoints. Start a new experiment.',
+      `Unsupported experiment definition lock ${String(locked.schemaVersion)}. Resuming requires ${definitionLockVersion}. Start a new experiment.`,
     );
   const { digest: expected, ...content } = locked;
   if (expected !== digest(content))

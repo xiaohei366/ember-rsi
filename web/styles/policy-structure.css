@@ -342,6 +342,7 @@
   stroke: var(--primary);
   stroke-width: 2.2;
 }
+.policy-edge[data-kind='learning-hook'] path,
 .policy-edge[data-dynamic='true'] path,
 .policy-edge[data-kind='continue'] path,
 .policy-edge[data-kind='break'] path,

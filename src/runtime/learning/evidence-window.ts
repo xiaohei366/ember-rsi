@@ -1,6 +1,7 @@
 import type { JsonObject, JsonValue } from '../../contracts/index.js';
+import { matchesStepPath } from './trigger.js';
 import { digest, string, strings } from '../../shared/json.js';
-import type { EvidenceOptions, ReflectionEvidence } from './evidence.js';
+import type { EvidenceOptions, LearningEvidence } from './evidence.js';
 
 export interface EvidenceCall {
   record: JsonObject;
@@ -28,12 +29,14 @@ async function ownedFacts(
   const { facts, experimentId } = options.context;
   const entries = facts.scan ? facts.scan(kind) : await facts.list(kind);
   const owned: JsonObject[] = [];
-  for await (const entry of entries)
+  for await (const entry of entries) {
+    options.context.signal?.throwIfAborted();
     if (entry.experimentId === experimentId) owned.push(entry);
+  }
   return owned;
 }
 type EvidenceWindow =
-  | { kind: 'saved'; evidence: ReflectionEvidence }
+  | { kind: 'saved'; evidence: LearningEvidence }
   | {
       kind: 'window';
       calls: EvidenceCall[];
@@ -43,7 +46,9 @@ type EvidenceWindow =
       cutoff: number;
       primaryIds: string[];
       policyScopeId: string;
-      moduleKey: string;
+      excludedMeasurements: Set<string>;
+      excludedProducers: Set<string>;
+      withheldSelections: Set<string>;
     };
 /** Select one durable observation window before expanding authorized references. */
 export async function selectEvidenceWindow(
@@ -53,19 +58,19 @@ export async function selectEvidenceWindow(
   const { context } = options;
   context.signal?.throwIfAborted();
   const policyScopeId = options.policyScopeId ?? '';
-  const moduleKey = options.moduleKey ?? '';
+  const kind = options.kind;
   if (options.priorRef) {
     const saved = await context.facts.read('evidence-views', options.priorRef);
     if (
       saved.experimentId !== context.experimentId ||
-      saved.view !== 'reflection-observations/v1' ||
+      saved.view !== 'learning-observations/v1' ||
       saved.boundaryId !== options.identity ||
       saved.policyScopeId !== policyScopeId ||
-      saved.moduleKey !== moduleKey ||
+      saved.moduleKind !== kind ||
       saved.configDigest !== (options.configDigest ?? null) ||
       saved.evidenceView !== (options.view ?? 'execution')
     )
-      throw new Error('Reflection evidence snapshot ownership mismatch');
+      throw new Error('Learning evidence snapshot ownership mismatch');
     return {
       kind: 'saved',
       evidence: {
@@ -81,9 +86,9 @@ export async function selectEvidenceWindow(
   const snapshots = await ownedFacts(options, 'evidence-views');
   const prepared = snapshots.filter(
     (record) =>
-      record.view === 'reflection-observations/v1' &&
+      record.view === 'learning-observations/v1' &&
       record.policyScopeId === policyScopeId &&
-      record.moduleKey === moduleKey &&
+      record.moduleKind === kind &&
       record.boundaryId === options.identity,
   );
   if (prepared.length) {
@@ -97,7 +102,7 @@ export async function selectEvidenceWindow(
       prepared[0]!.evidenceView !== (options.view ?? 'execution')
     )
       throw new Error(
-        'Reflection invocation has inconsistent persisted evidence snapshots',
+        'Learning invocation has inconsistent persisted evidence snapshots',
       );
     return {
       kind: 'saved',
@@ -108,35 +113,37 @@ export async function selectEvidenceWindow(
       },
     };
   }
-  const reflections = await ownedFacts(options, 'reflection');
+  const runs = await ownedFacts(options, 'learning-runs');
   // Evidence from a failed attempt is still available to this Policy step.
   const sameStepAttempts = new Set(
-    reflections
+    runs
       .filter(
         (record) =>
           options.stepPath !== undefined &&
           record.policyScopeId === policyScopeId &&
+          record.kind === kind &&
           record.stepPath === options.stepPath,
       )
-      .map((record) => record.reflectionId),
+      .map((record) => record.learningId),
   );
   const previous = snapshots.filter(
     (record) =>
-      record.view === 'reflection-observations/v1' &&
+      record.view === 'learning-observations/v1' &&
       record.policyScopeId === policyScopeId &&
-      record.moduleKey === moduleKey &&
+      record.moduleKind === kind &&
+      record.configDigest === (options.configDigest ?? null) &&
       record.boundaryId !== options.identity &&
       !sameStepAttempts.has(record.boundaryId) &&
       Date.parse(String(record.capturedAt)) <= cutoff,
   );
-  const triggers = reflections.filter(
+  const triggers = runs.filter(
     (record) =>
       record.policyScopeId === policyScopeId &&
-      record.configFile === moduleKey &&
+      record.kind === kind &&
       (options.configDigest === undefined ||
         record.configDigest === options.configDigest) &&
-      record.reflectionId !== options.identity &&
-      asObject(record.result).reflectionId !== options.identity &&
+      record.learningId !== options.identity &&
+      asObject(record.result).learningId !== options.identity &&
       (options.stepPath === undefined ||
         record.stepPath !== options.stepPath) &&
       Number.isFinite(Date.parse(String(record.startedAt))) &&
@@ -157,6 +164,7 @@ export async function selectEvidenceWindow(
         boundaryId: snapshot.boundaryId ?? null,
         capturedAt: snapshot.capturedAt ?? null,
       });
+  const excludedMeasurements = new Set<string>();
   const calls: EvidenceCall[] = [];
   const allRecords = await ownedFacts(options, 'calls');
   const byId = new Map(
@@ -181,7 +189,7 @@ export async function selectEvidenceWindow(
     context.signal?.throwIfAborted();
     if (!inScope(record)) continue;
     if (
-      options.names.includes(String(record.bindingId)) &&
+      matchesPrimary(record, options) &&
       terminal(record) &&
       !Number.isFinite(finished(record))
     )
@@ -207,21 +215,125 @@ export async function selectEvidenceWindow(
       finished(a.record) - finished(b.record) ||
       String(a.record.callId).localeCompare(String(b.record.callId)),
   );
-  const selected = calls.filter(
+  const excludedIds = new Set(
+    allRecords
+      .filter((record) =>
+        matchesObservedStep(record, options.observe.excludeSteps),
+      )
+      .map((record) => String(record.callId)),
+  );
+  const belongsTo = (id: string, ids: ReadonlySet<string>): boolean => {
+    const visited = new Set<string>();
+    while (!visited.has(id)) {
+      if (ids.has(id)) return true;
+      visited.add(id);
+      const parent = byId.get(id)?.parentCallId;
+      if (typeof parent !== 'string') break;
+      id = parent;
+    }
+    return false;
+  };
+  const excludedProducers = new Set<string>();
+  for (const record of allRecords) {
+    if (
+      belongsTo(String(record.callId), excludedIds) ||
+      !inScope(record) ||
+      (options.observe.steps && !matchesPrimary(record, options))
+    ) {
+      excludedProducers.add(String(record.callId));
+      // Selectors can repeat an admitted evaluator's measurementRef.
+      const ref = asObject(record.output).measurementRef;
+      if (
+        typeof ref === 'string' &&
+        !String(record.contractId).startsWith('contract.selector')
+      )
+        excludedMeasurements.add(ref);
+    }
+  }
+  // An artifact selector's Agent can quote any delivery it opened. Keep its
+  // decision identity, while withholding derived text and child workspaces.
+  const withheldSelections = new Set<string>();
+  if (excludedMeasurements.size || excludedProducers.size) {
+    for (const record of allRecords) {
+      if (
+        (record.contractId !== 'contract.selector-artifacts' &&
+          record.pluginId !== 'selector.artifact') ||
+        !inScope(record)
+      )
+        continue;
+      const candidates = asObject(record.input).candidates;
+      if (!Array.isArray(candidates)) continue;
+      for (const candidate of candidates) {
+        const ref = asObject(candidate).measurementRef;
+        if (typeof ref !== 'string') continue;
+        if (!excludedMeasurements.has(ref)) {
+          const measurement = await context.facts
+            .read('measurements', ref)
+            .catch((error: unknown) => {
+              if (
+                error instanceof Error &&
+                'code' in error &&
+                error.code === 'ENOENT'
+              )
+                return null;
+              throw error;
+            });
+          if (
+            measurement?.experimentId === context.experimentId &&
+            !excludedProducers.has(String(measurement.callId))
+          )
+            continue;
+        }
+        withheldSelections.add(string(record.callId));
+        break;
+      }
+    }
+  }
+  const allowed = calls.filter(
     (call) =>
-      options.names.includes(String(call.record.bindingId)) &&
-      finished(call.record) > windowStart,
+      !belongsTo(String(call.record.callId), excludedIds) &&
+      !belongsTo(call.parent, withheldSelections),
+  );
+  const selected = allowed.filter(
+    (call) =>
+      matchesPrimary(call.record, options) &&
+      (finished(call.record) > windowStart ||
+        (finished(call.record) === windowStart &&
+          !admitted.has(String(call.record.callId)) &&
+          previous.length > 0)),
   );
   const primaryIds = selected.map((call) => string(call.record.callId));
   return {
     kind: 'window',
-    calls,
+    calls: allowed,
     selected,
     admitted,
     windowStart,
     cutoff,
     primaryIds,
     policyScopeId,
-    moduleKey,
+    excludedMeasurements,
+    excludedProducers,
+    withheldSelections,
   };
+}
+
+export function matchesObservedStep(
+  record: JsonObject,
+  steps: readonly string[] | undefined,
+): boolean {
+  return (
+    typeof record.path === 'string' &&
+    !!steps?.some((location) => matchesStepPath(String(record.path), location))
+  );
+}
+export function matchesPrimary(
+  record: JsonObject,
+  options: EvidenceOptions,
+): boolean {
+  return (
+    !!options.observe.bindings?.includes(
+      record.bindingId === '_memory' ? 'memory' : String(record.bindingId),
+    ) || matchesObservedStep(record, options.observe.steps)
+  );
 }

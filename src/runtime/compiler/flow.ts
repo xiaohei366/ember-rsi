@@ -5,6 +5,11 @@ import type {
 } from '../../contracts/index.js';
 import { scopeRoots, validateTemplate, type Scope } from './scope.js';
 import type { Step, StepValidationContext, Template } from '../policy/steps.js';
+import {
+  snapshotScope,
+  type FlowIndex,
+  type StepLocation,
+} from '../learning/trigger.js';
 
 export function compileFlow(policy: {
   inputDefaults: JsonObject;
@@ -14,9 +19,10 @@ export function compileFlow(policy: {
   output: Template;
   requirements: Readonly<Record<string, PluginContract>>;
   defaults: JsonObject;
-}): void {
+}): FlowIndex {
+  const locations: StepLocation[] = [];
   const base: Scope = {
-    names: scopeRoots,
+    names: [...scopeRoots, 'memory'],
     frames: [],
     parallel: false,
     loopDepth: 0,
@@ -36,7 +42,7 @@ export function compileFlow(policy: {
     scope: Scope,
     label: string,
     output?: Template,
-  ): void {
+  ): Scope {
     const completed = new Set<string>();
     const local = {
       ...scope,
@@ -46,19 +52,29 @@ export function compileFlow(policy: {
       ],
     };
     for (const step of steps) {
+      let iterationScope: Scope | undefined;
       const context: StepValidationContext = {
         label: `${label}/${step.id}`,
         requirements: policy.requirements,
         stateSchema: policy.stateSchema,
         parallel: local.parallel,
         loopDepth: local.loopDepth,
-        reflectionDeclared: policy.defaults.reflection !== undefined,
         names: local.names,
-        validateTemplate(template, locals = []) {
-          validateTemplate(template, local, this.label, locals);
+        validateTemplate(template, locals = [], allowMemory = true) {
+          validateTemplate(
+            template,
+            allowMemory
+              ? local
+              : {
+                  ...local,
+                  names: local.names.filter((name) => name !== 'memory'),
+                },
+            this.label,
+            locals,
+          );
         },
         validateSteps(children, options) {
-          visit(
+          const childScope = visit(
             children,
             {
               ...local,
@@ -66,16 +82,29 @@ export function compileFlow(policy: {
               parallel: local.parallel || (options.parallel ?? false),
               loopDepth: options.loopDepth ?? local.loopDepth,
             },
-            `${this.label}/${options.scope}`,
+            options.scope === 'then' || options.scope === 'else'
+              ? `${this.label}/${options.scope}/steps`
+              : `${this.label}/steps`,
             options.output,
           );
+          if (options.scope === 'iteration') iterationScope = childScope;
         },
       };
       step.validate(context);
       if (step.type !== 'control') completed.add(step.id);
+      locations.push({
+        step,
+        location: context.label,
+        postScope: snapshotScope(local),
+        iterationScope,
+      });
     }
     if (output !== undefined)
       validateTemplate(output, local, `${label}.output`);
+    return snapshotScope(local);
   }
-  visit(policy.steps, base, 'steps', policy.output);
+  return {
+    locations,
+    rootScope: visit(policy.steps, base, 'steps', policy.output),
+  };
 }

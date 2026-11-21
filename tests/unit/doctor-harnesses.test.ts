@@ -241,7 +241,7 @@ for (const name of ['dsh-harness2', 'dsh-wikiskill', 'dsh-gepa'] as const) {
       );
     if (name === 'dsh-harness2') {
       assert.equal(
-        report.checks.find((check) => check.id === 'reflection.prepare-project')
+        report.checks.find((check) => check.id === 'memory.prepare-project')
           ?.status,
         'passed',
       );
@@ -461,4 +461,44 @@ test('identical scripted Recipe checks stay deterministic across two conversatio
     'passed',
   );
   verifyReport(reduceLatency);
+});
+
+test('Doctor verifies cross-experiment Memory and explains how to export built-in Reflection targets', async (t) => {
+  const f = await fixture(t, 'dsh-harness2');
+  delete object(f.data.bindings).domainProposer;
+  f.data.reflection = { enabled: true };
+  f.data.memory = { enabled: true, seed: { fromExperiment: 'source' } };
+  await writeFile(f.path, JSON.stringify(f.data));
+  const check = () => doctorRecipe(f.runtime, f.path, { staticOnly: true });
+  let report = await check();
+  assert.equal(
+    report.checks.find((check) => check.id === 'memory.seed')?.status,
+    'failed',
+  );
+  const { facts, artifacts } = f.runtime.manager;
+  const artifactRef = await artifacts.putJson({ kind: 'file-tree', files: [] });
+  const memory = { ref: 'saved', rootRef: 'saved', artifactRef };
+  await facts.write('experiments', 'source', {
+    id: 'source',
+    status: 'succeeded',
+  });
+  await facts.write('activations', 'source', {
+    experimentId: 'source',
+    memory,
+  });
+  await facts.write('memories', 'saved', {
+    ...memory,
+    experimentId: 'source',
+    kind: 'initial',
+  });
+  report = await check();
+  assert.equal(
+    report.checks.find((check) => check.id === 'memory.seed')?.status,
+    'passed',
+  );
+  const target = report.checks.find(
+    (check) => check.id === 'reflection.targets',
+  );
+  assert.equal(target?.status, 'passed');
+  assert.match(String(target?.details?.note), /reflection apply <id> --to/);
 });

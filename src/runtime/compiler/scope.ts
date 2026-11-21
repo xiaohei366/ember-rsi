@@ -27,6 +27,8 @@ export function validateTemplate(
     for (const path of expressionPaths(ast)) {
       if (!roots.includes(path[0]!))
         throw new Error(`${label}: root ${path[0]} is not allowed`);
+      if (path[0] === 'memory' && (path.length !== 2 || path[1] !== 'ref'))
+        throw new Error(`${label}: memory reference must use memory.ref`);
       if (path[0] === 'steps') {
         if (path.length < 3 || path[2] !== 'output')
           throw new Error(

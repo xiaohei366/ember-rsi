@@ -20,7 +20,7 @@ Policies use `rsi.policy/v1` with `rsi.recipe/v1` Recipes. The main fields are:
 | `input`               | Supply input defaults, which can reference the Application's initial candidate.                                                 |
 | `require`             | Declare binding names and their public contracts, such as `evaluator` requiring `contract.agentbench`.                          |
 | `defaults.bindings`   | Supply default plugins and configuration that the Recipe can override.                                                          |
-| `defaults.reflection` | Select a Reflection configuration file through `configFile`; required when the flow uses a `reflection` step.                   |
+| `defaults.memory` / `defaults.reflection` | Declare learning boundaries, evidence, and permissions. Recipes can override individual settings or attach either module independently. |
 | `state_schema`        | Define shared-state fields and types when the flow needs state.                                                                 |
 | `state`               | Set initial shared-state values; expressions can read `input`, `application`, and `config`.                                     |
 | `steps`               | Ordered execution steps, each declaring `id` and `type`.                                                                        |
@@ -41,7 +41,6 @@ List steps in execution order under `steps`. Each step declares `id` and `type`,
 | `foreach`    | Process each item in a collection, optionally in parallel. | Set `foreach` to the collection, `as` to the item name, `key` to a stable unique identity, and `steps` to each item's operations. `concurrency` limits how many items are processed at once and defaults to 1 (serial execution); `output` returns each item's result. |
 | `loop`       | Repeat a sequence of steps.                                | Supply the loop body in `steps` and required `maxIterations`, evaluating to an integer from 0 to 100,000. Optionally use `while` to end the loop early and `output` to define its return value.                                                                        |
 | `control`    | Exit a loop, skip the current iteration, or end the flow.  | Set `control` to `break`, `continue`, or `fail`; `fail` also requires `reason`.                                                                                                                                                                                        |
-| `reflection` | Use the built-in Reflection capability for self-evolution. | Set the step's `type: reflection` and declare the module in `defaults.reflection`. Requires serial execution; see the [Reflection guide](reflection.md) for configuration.                                                                                             |
 
 The Runtime enforces the [Recipe budget](configuration.md#limits-and-budgets) across the workflow.
 
@@ -59,10 +58,12 @@ bestCandidateRef: ${{ state.bestCandidateRef }} # Current shared state
 - Expressions occupy the entire field value. `steps` can reference completed steps in the current or enclosing block.
 - `application.initialCandidate` and `loop.index` are fixed framework properties.
 
+Steps and Policy output can read the active Memory snapshot ID with `${{ memory.ref }}`. Loop `while` predicates use the pre-hook Policy state.
+
 ### Shared state and parallel execution
 
 - Declare fields with `state_schema`, initialize them with `state`, and update them through `state` steps. Every expression in one update reads the state before that update.
-- Parallel `foreach` branches return results through their own `output`; later serial steps aggregate them and update shared state. Shared-state updates and Reflection steps require serial execution.
+- Parallel `foreach` branches return results through their own `output`; later serial steps aggregate them and update shared state. State updates and learning triggers require serial execution.
   - `if` and `foreach` outputs are evaluated inside their blocks; a `loop` output is evaluated after the loop ends.
   - Save loop-local data that must be retained in shared state, and initialize values for the zero-iteration case.
 

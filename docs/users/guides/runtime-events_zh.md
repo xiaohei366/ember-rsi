@@ -52,6 +52,7 @@
 | `parentCallId` | `string`                                                           | 发起本次调用的上层执行 ID。                                                      |
 | `path`         | `string`                                                           | 调用在流程中的位置；Policy 调用通常对应步骤路径，其他调用可能使用发起方执行 ID。 |
 | `bindingRef`   | `string`                                                           | 该绑定选择的插件 ID，如 `evaluator.agentbench`。                                 |
+| `memoryRef` | `string \| null` | 该调用固定读取的 Memory 快照引用，未授权或无快照时为 `null`。 |
 | `revisionRef`  | `string \| null`                                                   | 本次调用使用的插件修订引用；没有生效修订时为 `null`。                            |
 | `status`       | `'running' \| 'succeeded' \| 'failed' \| 'cancelled' \| 'unknown'` | 本次调用的状态；`before-call` 对应 `running`，其余事件与事件名中的状态一致。     |
 
@@ -116,6 +117,7 @@ ctx.event.emit('rsi/agent-observation', {
 | -------------------------- | ------------------------------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `rsi/candidate-recorded`   | 候选保存后                                       | `emit`   | `callId: string`：写入该记录的调用 ID。<br>`bindingId: string`：写入该记录的绑定名。<br>`candidateRef: string`：已保存的候选引用。<br>`parentRef: string \| null`：父候选引用；初始候选为 `null`。                                                                                                                          |
 | `rsi/measurement-recorded` | 测量校验并保存后                                 | `emit`   | `callId: string`：写入该记录的调用 ID。<br>`bindingId: string`：写入该记录的绑定名。<br>`measurementRef: string`：已保存的测量引用。                                                                                                                                                                                        |
+| `rsi/memory-updated` | Memory 更新结果已保存。 | `emit` | `learningId`、`triggerPath`、`status`（activated、no-change、skipped 或 rejected），以及可为空的 `memoryRef`、`parentRef`、`artifactRef`。 |
 | `rsi/revision-activated`   | 激活记录保存、有效绑定及已有插件实例的订阅切换后 | `emit`   | `activationId: string`：本次修订启用记录的 ID。<br>`bindingIds: readonly string[]`：本次启用修订涉及的绑定名列表。<br>`revisionRefs: Readonly<Record<string, string>>`：本次启用的修订映射，键为绑定名，值为修订引用。<br>`policyRevisionRef?: string`：可选。契约预留的 Policy 修订引用；当前 Runtime 发布该事件时不设置。 |
 
 ## 3. 监听内置事件

@@ -24,17 +24,19 @@ bindings:
       agentRef: agent
       prompt: ./proposer.md
       guidance: ./guidance
-  memory:
-    plugin: memory.agent
-    config:
-      agentRef: agent
-      prompt: ./memory.md
   evaluator: { plugin: evaluator.skill-text, config: {} }
   selector:
     {
       plugin: selector.metric,
       config: { metric: checkPhrase, direction: maximize },
     }
+memory:
+  trigger: { afterIteration: search, skipFinal: true }
+  observe: { bindings: [proposer, evaluator, selector] }
+  consumers: [proposer]
+  goal: Retain reusable checking procedures supported by execution evidence.
+  config: { agentRef: agent, prompt: ./memory.md }
+  budget: { modelCalls: 6 }
 budget:
   modelCalls: 20
   evaluationRuns: 3

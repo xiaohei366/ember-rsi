@@ -13,6 +13,7 @@ import {
 import {
   definitionLockVersion,
   parseLockedReflection,
+  parseLockedMemory,
 } from '../manager/definition-lock.js';
 
 class DefinitionLockError extends Error {
@@ -31,6 +32,7 @@ function readDefinitionLock(locked: JsonObject): {
   policy: JsonObject;
   recipe: JsonObject;
   reflection: JsonValue | null;
+  memory: JsonValue | null;
 } {
   if (locked.schemaVersion !== definitionLockVersion)
     throw new DefinitionLockError(
@@ -73,6 +75,7 @@ function readDefinitionLock(locked: JsonObject): {
     ])
       if (policy[field] !== undefined)
         object(policy[field], `locked policy.${field}`);
+    if (locked.memory != null) parseLockedMemory(locked.memory);
     if (locked.reflection !== null && locked.reflection !== undefined)
       parseLockedReflection(locked.reflection);
     return {
@@ -80,13 +83,14 @@ function readDefinitionLock(locked: JsonObject): {
       policy,
       recipe,
       reflection: locked.reflection ?? null,
+      memory: locked.memory ?? null,
     };
   } catch (error) {
     if (error instanceof DefinitionLockError) throw error;
     // Persisted declarations may contain credentials; do not relay validator excerpts.
     throw new DefinitionLockError(
       'invalid-source',
-      'Saved definition contains invalid Policy, Recipe, or Reflection data.',
+      'Saved definition contains invalid Policy, Recipe, or learning data.',
     );
   }
 }

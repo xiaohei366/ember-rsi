@@ -1,7 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { lock } from 'proper-lockfile';
-import { acquireResourceGate } from '../revisions/exclusion.js';
+import { acquireResourceGate } from '../learning/exclusion.js';
 import type { FactStore } from '../../contracts/index.js';
 import { errorText } from '../../shared/errors.js';
 import type { ManagedEvents } from '../services/events.js';

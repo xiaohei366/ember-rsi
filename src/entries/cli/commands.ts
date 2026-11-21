@@ -8,7 +8,6 @@ import {
   type CommanderError,
 } from 'commander';
 import type { Runtime } from '../../runtime/context.js';
-import type { RevisionApplication } from '../../runtime/revisions/application.js';
 
 export interface CommandContext {
   signal: AbortSignal;
@@ -84,21 +83,35 @@ export async function runCommand(
     .command('cancel <experiment-id>')
     .description('Cancel an experiment')
     .action(cancelExperiment);
-  const reflection = program
-    .command('reflection')
-    .description('Inspect and apply reflection revisions');
-  reflection
-    .command('list [experiment-id]')
-    .description('List reflection revisions')
-    .action(forRevision((revisions, id) => revisions.list(id)));
-  reflection
-    .command('show <revisionID>')
-    .description('Show reflection revisions')
-    .action(forRevision((revisions, id) => revisions.show(requireId(id))));
-  reflection
-    .command('apply <revisionID>')
-    .description('Apply reflection revisions')
-    .action(forRevision((revisions, id) => revisions.apply(requireId(id))));
+  for (const kind of ['memory', 'reflection'] as const) {
+    const group = program
+      .command(kind)
+      .description(`Inspect and apply ${kind} snapshots`);
+    group
+      .command('list [experiment-id]')
+      .description(`List ${kind} snapshots`)
+      .action((id?: string) =>
+        runJson(({ manager }) => manager[kind]().list(id || undefined)),
+      );
+    for (const operation of ['show', 'apply'] as const)
+      group
+        .command(
+          `${operation} <${kind === 'memory' ? 'memoryID' : 'revisionID'}>`,
+        )
+        .description(
+          `${operation === 'show' ? 'Preview' : 'Apply'} a ${kind} snapshot`,
+        )
+        .option('--to <directory>', 'Export to a dedicated directory')
+        .action((id: string, options: { to?: string }) => {
+          if (!id)
+            throw new Error(
+              `${kind === 'reflection' ? 'Revision' : 'Memory'} ID is required`,
+            );
+          return runJson(({ manager }) =>
+            manager[kind]()[operation](id, options),
+          );
+        });
+  }
   program
     .command('catalog')
     .description('Show registered contracts, plugins, and policies')
@@ -162,18 +175,6 @@ export async function runCommand(
       await manager.cancel(id);
       return { id, cancellationRequested: true };
     });
-  }
-
-  function forRevision(
-    execute: (revisions: RevisionApplication, id?: string) => Promise<unknown>,
-  ): (id?: string) => Promise<void> {
-    return (id) =>
-      runJson(({ manager }) => execute(manager.reflection(), id || undefined));
-  }
-
-  function requireId(id?: string): string {
-    if (!id) throw new Error('Revision ID is required');
-    return id;
   }
 
   async function startDashboard({ port }: { port: number }): Promise<void> {

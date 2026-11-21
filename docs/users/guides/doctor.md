@@ -29,7 +29,7 @@ flowchart TD
     C -- Yes --> E["Load and validate Recipe<br/>Merge the effective configuration"]
     E --> F{"Validation succeeded?"}
     F -- No --> G["Record recipe.validate failure"]
-    F -- Yes --> H["Prepare a temporary Runtime<br/>Visit the Application, bindings and Reflection"]
+    F -- Yes --> H["Prepare a temporary Runtime<br/>Visit the Application, bindings and learning modules"]
     H --> I["Check declared local paths"]
     I --> J{"Full check with a<br/>declared doctor callback?"}
     J -- Yes --> K["Run the doctor callback"]
@@ -46,10 +46,10 @@ flowchart TD
 ```
 
 1. **Load registrations.** The CLI uses the usual Runtime registration to load built-in components, user extensions in `~/.arsi/plugins/<name>/index.mjs` and extensions specified by `--plugin-dir`.
-2. **Load the effective Recipe.** `Recipe.load` validates Schemas, bindings, contract compatibility, Policy compilation, budgets and declared Reflection resources.
+2. **Load the effective Recipe.** `Recipe.load` validates Schemas, bindings, contract compatibility, Policy compilation, budgets and enabled Memory and Reflection resources.
    - Probes use the configuration produced by merging Policy defaults and Recipe overrides.
    - A loading error produces a failed diagnostic and stops component probes.
-3. **Check declared local paths.** For the Application, each effective binding and the configured Reflection implementation, doctor checks local files and directories marked with `x-rsi-path` for existence, type and readability.
+3. **Check declared local paths.** For the Application, each effective binding and each enabled learning module, doctor checks local files and directories marked with `x-rsi-path` for existence, type and readability.
 4. **Run component checks.** By default, the framework calls `doctor` on each definition that declares it and collects its `DoctorResult`. Unavailable prerequisites can leave dependent checks `unchecked` while independent checks continue. `--static` skips all callbacks, including their model access, instance preparation and SDK probes. The report marks `<binding>.plugin` as `unchecked` when the flag skips a callback or the definition omits it, with a reason for each case.
 5. **Clean up and report.** RSI checks use isolated temporary storage, propagate cancellation, release the instances and processes they create, and remove temporary files. Checks can read existing artifacts as inputs. RSI keeps its captures and writes in the temporary Runtime.
 
@@ -97,6 +97,8 @@ The following built-in implementations declare their own `doctor` callback. Doct
 | `agent.opencode` | Check the V2 CLI version, required options, and composition of native configuration with the RSI read-only Agent. Uses a private instance and may refresh native caches. |
 
 ### Proposers, Memory, Reflection and Selectors
+
+A disabled module contributes one `unchecked` status. Doctor probes resources only for enabled modules. With `memory.seed.fromExperiment`, it checks the source experiment and its snapshot.
 
 | Implementation              | Checks performed                                                                                                                                                                                                                |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

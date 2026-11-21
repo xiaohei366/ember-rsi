@@ -115,10 +115,16 @@ for (const customized of [false, true]) {
               memories++;
               events.push('memory');
               assert.match(
-                await readFile(join(cwd, 'context/measurements.json'), 'utf8'),
+                await readFile(
+                  join(cwd, 'context/learning/training-summary.json'),
+                  'utf8',
+                ),
                 /score/,
               );
-              assert.ok(Array.isArray(object(metadata.observations).trials));
+              assert.equal(
+                metadata.evidenceIndex,
+                'context/learning/index.json',
+              );
               if (memories === 2)
                 throw new Error('Simulated Memory backend failure');
               return memories === 1
@@ -139,7 +145,7 @@ for (const customized of [false, true]) {
               assert.equal(metadata.evidenceView, 'training-summary');
               assert.match(
                 await readFile(
-                  join(cwd, 'context/reflection/index.json'),
+                  join(cwd, 'context/learning/index.json'),
                   'utf8',
                 ),
                 /proposer/,
@@ -188,7 +194,7 @@ for (const customized of [false, true]) {
               );
             } else {
               assert.equal(
-                object(metadata.memory)['index.md'],
+                await readFile(join(cwd, 'context/memory/index.md'), 'utf8'),
                 'Measured lesson: check graph coverage.',
               );
               assert.match(
@@ -232,19 +238,6 @@ for (const customized of [false, true]) {
       'Scenario Memory instructions',
     );
     await writeFile(join(root, 'scene/reflection.md'), reflectionGoal);
-    await writeFile(
-      join(root, 'scene/reflection.yaml'),
-      `
-evidence: [proposer, evaluator, selector, memoryUpdater]
-targets:
-  proposer: { resources: [guidance] }
-goal: ./reflection.md
-implementation:
-  contract: contract.reflection
-  ref: reflection.agent
-  config: { agentRef: agent, evidenceView: training-summary }
-`,
-    );
     const recipe = join(root, 'recipe.json');
     await writeFile(
       recipe,
@@ -276,17 +269,17 @@ implementation:
           config: {
             maxTrials: 4,
             candidatesPerRound: 1,
-            memory: true,
-            reflection: true,
           },
         },
-        ...(customized
-          ? { reflection: { configFile: './scene/reflection.yaml' } }
-          : {}),
+        memory: {
+          enabled: true,
+          ...(customized ? { config: { prompt: './scene/memory.md' } } : {}),
+        },
+        reflection: {
+          enabled: true,
+          ...(customized ? { goalFile: './scene/reflection.md' } : {}),
+        },
         bindings: {
-          ...(customized
-            ? { memoryUpdater: { config: { prompt: './scene/memory.md' } } }
-            : {}),
           agent: { plugin: 'learning.agent' },
           proposer: {
             config: {
@@ -337,20 +330,17 @@ implementation:
     const subsequent = proposerCalls.filter((call) => call !== initial);
     assert.notEqual(initial.revisionRef, subsequent[0]!.revisionRef);
     assert.equal(subsequent[0]!.revisionRef, subsequent[1]!.revisionRef);
-    const memoryCalls = calls.filter(
-      (call) => call.bindingId === 'memoryUpdater',
+    const runs = (await runtime.manager.facts.list('learning-runs')).filter(
+      (run) => run.kind === 'memory',
     );
-    const updated = memoryCalls.find(
-      (call) => object(call.output).status === 'updated',
+    assert.ok(runs.some((run) => run.status === 'rejected'));
+    assert.ok(runs.some((run) => run.status === 'skipped'));
+    assert.ok(runs.some((run) => run.status === 'activated'));
+    assert.equal(
+      proposerCalls.filter((call) => call.memoryRef === output.memoryRef)
+        .length,
+      2,
     );
-    const failed = memoryCalls.find(
-      (call) => object(call.output).status === 'failed',
-    );
-    assert.ok(updated);
-    assert.ok(failed);
-    const previous = object(updated.output).memoryRef;
-    assert.equal(object(failed.output).memoryRef, previous);
-    assert.equal(output.memoryRef, previous);
     const resumed = await runtime.manager.run(recipe, {
       id: 'learning',
       resume: true,

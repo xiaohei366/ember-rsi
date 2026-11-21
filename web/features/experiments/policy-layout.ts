@@ -516,6 +516,39 @@ export function layoutPolicyFlow(
     }
     return null;
   }
+  // Keep hooks outside expanded regions, aligned to their nearest visible boundary.
+  let previousHookY = -Infinity;
+  const hookX =
+    graphWidth +
+    (model.flow.nodes.some((node) => node.kind === 'failure') ? 160 : 20);
+  const hooks = model.flow.edges
+    .filter((edge) => edge.kind === 'learning-hook')
+    .map((edge) => ({
+      node: flowNodes.get(edge.target),
+      anchor: boxes.get(visibleId(edge.source) ?? ''),
+    }))
+    .sort((a, b) => (a.anchor?.y ?? 0) - (b.anchor?.y ?? 0));
+  for (const { node, anchor } of hooks) {
+    if (!node || !anchor) continue;
+    const y = Math.max(anchor.y, previousHookY + 54);
+    const box = {
+      id: node.id,
+      x: hookX,
+      y,
+      width: 126,
+      height: 40,
+      dataNodeId: model.data.nodes.find(
+        (data) => data.kind === node.learningKind,
+      )?.id,
+    };
+    boxes.set(node.id, box);
+    nodes.push(box);
+    previousHookY = y;
+  }
+  if (hooks.length) {
+    graphWidth = hookX + 126;
+    graphHeight = Math.max(graphHeight, previousHookY + 40);
+  }
   const edges: GraphPath[] = [];
   const seen = new Set<string>();
   for (const edge of model.flow.edges) {

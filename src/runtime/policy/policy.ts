@@ -12,11 +12,12 @@ import {
   unknownKeys,
   freezeSnapshot,
 } from '../../shared/json.js';
-import { validateSchemaDefinition } from '../../shared/schema.js';
+import { validate, validateSchemaDefinition } from '../../shared/schema.js';
+import { learningDeclarationSchemas } from '../../contracts/learning.js';
 import { compileFlow } from '../compiler/flow.js';
 import { readPolicyDocument } from '../compiler/document.js';
 import { runPolicy, type PolicyExecutionOptions } from './executor.js';
-import { reflectionConfigFile } from '../revisions/declaration.js';
+import type { FlowIndex } from '../learning/trigger.js';
 import {
   parseSteps,
   safeIdentifier,
@@ -30,6 +31,7 @@ export interface CompilePolicyOptions {
   directory?: string;
   contracts?: ContractResolver;
   sourcePath?: string;
+  resourceDirectories?: ReadonlyMap<string, string>;
 }
 const emptyObjectSchema: JsonObject = {
   type: 'object',
@@ -48,6 +50,7 @@ export class Policy {
   readonly description?: string;
   readonly sourcePath: string;
   readonly directory: string;
+  private readonly resourceDirectories: ReadonlyMap<string, string>;
   readonly inputSchema: JsonSchema;
   readonly configSchema: JsonSchema;
   readonly stateSchema: JsonSchema;
@@ -57,6 +60,7 @@ export class Policy {
   readonly requirements: Readonly<Record<string, PluginContract>>;
   readonly defaults: JsonObject;
   readonly steps: readonly Step[];
+  readonly flowIndex: FlowIndex;
   readonly output: Template;
   readonly digest: string;
 
@@ -90,6 +94,7 @@ export class Policy {
       options.sourcePath ?? resolve(options.directory ?? '.', 'policy.yaml'),
     );
     this.directory = resolve(options.directory ?? dirname(this.sourcePath));
+    this.resourceDirectories = new Map(options.resourceDirectories);
     this.inputSchema = schema(policy.input_schema, 'input_schema', true);
     this.configSchema = schema(
       policy.config_schema === undefined
@@ -122,7 +127,8 @@ export class Policy {
     )) {
       if (
         !name.split('.').every((part) => safeIdentifier.test(part)) ||
-        name === 'reflection'
+        name === 'reflection' ||
+        name === 'memory'
       )
         throw new Error(`require: invalid or reserved dependency ${name}`);
       const entry = object(raw, `require.${name}`);
@@ -147,9 +153,18 @@ export class Policy {
     this.defaults = freezeSnapshot(
       object(policy.defaults === undefined ? {} : policy.defaults, 'defaults'),
     );
-    unknownKeys(this.defaults, ['bindings', 'reflection'], 'defaults');
-    if (this.defaults.reflection !== undefined)
-      reflectionConfigFile(this.defaults.reflection, 'defaults.reflection');
+    unknownKeys(
+      this.defaults,
+      ['bindings', 'memory', 'reflection'],
+      'defaults',
+    );
+    for (const kind of ['memory', 'reflection'] as const)
+      if (this.defaults[kind] !== undefined)
+        validate(
+          learningDeclarationSchemas[kind],
+          this.defaults[kind],
+          `defaults.${kind}`,
+        );
     for (const [name, raw] of Object.entries(
       object(
         this.defaults.bindings === undefined ? {} : this.defaults.bindings,
@@ -169,16 +184,23 @@ export class Policy {
     if (policy.output === undefined)
       throw new Error('policy.output is required');
     this.output = freezeSnapshot(policy.output);
-    compileFlow(this);
+    this.flowIndex = compileFlow(this);
     this.digest = digest({ policy: this.toJSON(), contracts: requirements });
     Object.freeze(this);
   }
 
   static async load(path: string, registry: ContractResolver): Promise<Policy> {
-    return new Policy(await readPolicyDocument(path), {
+    const resourceDirectories = new Map<string, string>();
+    return new Policy(await readPolicyDocument(path, [], resourceDirectories), {
+      resourceDirectories,
       sourcePath: path,
       contracts: registry,
     });
+  }
+
+  /** Resolve learning resources relative to the YAML file that supplied each field, including local refs. */
+  resourceDirectory(pointer: string): string {
+    return this.resourceDirectories.get(pointer) ?? this.directory;
   }
 
   async execute(options: PolicyExecutionOptions): Promise<JsonValue> {

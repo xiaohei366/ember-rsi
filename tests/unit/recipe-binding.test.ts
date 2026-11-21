@@ -455,10 +455,7 @@ test('bundled Recipes preserve time budgets without injecting call or token limi
     assert.deepEqual(configured.budget, {
       elapsedWallMs: name === 'dsh-harness2' ? 259200000 : 172800000,
     });
-    assert.deepEqual(
-      configured.reflection?.budget ?? {},
-      name === 'dsh-harness2' ? { elapsedWallMs: 3600000 } : {},
-    );
+    assert.deepEqual(configured.reflection?.budget ?? {}, {});
     assert.equal(configured.bindings.agent!.config.timeoutMs, 1800000);
     assert.equal(configured.bindings.agent!.config.executionTimeoutMs, 3600000);
     assert.equal(configured.bindings.agent!.config.retries, 3);
@@ -479,10 +476,7 @@ test('bundled Recipes preserve time budgets without injecting call or token limi
     assert.equal(recipe.bindings.agent!.config.timeoutMs, undefined);
     assert.equal(recipe.bindings.agent!.config.executionTimeoutMs, undefined);
     assert.equal(recipe.reflection?.budget.modelCalls, undefined);
-    assert.equal(
-      recipe.reflection?.implementation.config.maxModelCalls,
-      undefined,
-    );
+    assert.equal(recipe.reflection?.config.maxModelCalls, undefined);
     const editors = Object.entries(recipe.bindings).filter(([, binding]) =>
       ['proposer.agent', 'memory.agent', 'selector.artifact'].includes(
         binding.pluginId,
@@ -589,7 +583,7 @@ test('Recipe rejects unknown bindings, invalid budgets, legacy fields and mismat
   );
 });
 
-test('Recipe selects one complete Reflection file and restores locked definitions after source files change', async (t) => {
+test('Recipe merges Reflection overrides and restores locked definitions after source files change', async (t) => {
   const { registry, directory, recipe: raw } = await recipeFixture(t);
   registry.registerOperation({
     id: 'reflection.test',
@@ -606,7 +600,11 @@ test('Recipe selects one complete Reflection file and restores locked definition
   const policyPath = registry.policy('policy.test');
   const policy = await readYaml(policyPath);
   object(policy.defaults).reflection = {
-    configFile: './missing-default-reflection.yaml',
+    trigger: { afterPolicy: true },
+    observe: { bindings: ['worker'] },
+    targets: { worker: { resources: ['nested'] } },
+    plugin: 'reflection.test',
+    goalFile: './missing-default-goal.md',
   };
   await writeFile(policyPath, stringify(policy));
   await writeFile(join(directory, 'inherited'), 'Inherited resource');
@@ -615,36 +613,23 @@ test('Recipe selects one complete Reflection file and restores locked definition
     join(directory, 'goal.md'),
     'Improve the selected resources.',
   );
-  const reflectionPath = join(directory, 'selected-reflection.yaml');
-  await writeFile(
-    reflectionPath,
-    stringify({
-      evidence: ['worker'],
-      targets: { worker: { resources: ['nested'] } },
-      goal: './goal.md',
-      implementation: {
-        contract: 'contract.reflection',
-        ref: 'reflection.test',
-        config: {},
-      },
-      budget: { modelCalls: 0 },
-    }),
-  );
   const recipePath = join(directory, 'recipe.yaml');
   await writeFile(
     recipePath,
     stringify({
       ...raw,
-      reflection: { configFile: './selected-reflection.yaml' },
+      reflection: { goalFile: './goal.md', budget: { modelCalls: 0 } },
     }),
   );
   const recipe = await Recipe.load(recipePath, registry);
-  assert.equal(recipe.reflection?.path, reflectionPath);
+  assert.deepEqual(recipe.reflection?.trigger, [{ afterPolicy: true }]);
   assert.equal(recipe.reflection?.goal, 'Improve the selected resources.');
-  assert.deepEqual(recipe.reflection?.implementation.config, { mode: 'safe' });
-  assert.deepEqual(recipe.toJSON().reflection, { configFile: reflectionPath });
+  assert.deepEqual(recipe.reflection?.config, { mode: 'safe' });
+  assert.equal(
+    object(recipe.toJSON().reflection).goalFile,
+    join(directory, 'goal.md'),
+  );
   await writeFile(policyPath, 'invalid changed Policy');
-  await rm(reflectionPath);
   await rm(join(directory, 'goal.md'));
   const restored = await Recipe.fromJSON(recipe.toJSON(), registry, {
     sourcePath: recipePath,

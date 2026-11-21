@@ -23,6 +23,14 @@ export type {
   RecipeDeclaration,
 } from './recipe.js';
 export { bindingDeclarationSchema, recipeDeclarationSchema } from './recipe.js';
+export type {
+  LearningKind,
+  LearningTrigger,
+  LearningObserve,
+  LearningBudget,
+  MemoryDeclaration,
+  ReflectionDeclaration,
+} from './learning.js';
 export type { Candidate } from './models/candidate.js';
 export * from './models/measurement.js';
 export * from './models/file-tree.js';
@@ -32,6 +40,7 @@ export type { BudgetScope } from './runtime/execution.js';
 export type {
   ArtifactStore,
   FactStore,
+  MemorySnapshot,
   Workspace,
   WorkspaceService,
 } from './runtime/services.js';

@@ -215,9 +215,9 @@ arsi show terminal-skills-01 # Inspect the saved status and results
 
 - 用 `arsi list` 查看已保存的实验。
 - 用 `arsi cancel terminal-skills-01` 请求取消。
-- 用 `arsi doctor my-experiment/recipe.yaml` 检查 Schema、绑定、契约、已声明的 Reflection 资源、本地输入和已支持的运行前提。Evaluator 委托 SDK 的完整 doctor，包括其下载与 Docker 构建探针；覆盖范围与副作用见 [doctor 指南](guides/doctor_zh.md)。
+- 用 `arsi doctor my-experiment/recipe.yaml` 检查 Schema、绑定、契约、已启用的 Memory 和 Reflection 资源、本地输入和已支持的运行前提。Evaluator 委托 SDK 的完整 doctor，包括其下载与 Docker 构建探针；覆盖范围与副作用见 [doctor 指南](guides/doctor_zh.md)。
 - 用 `arsi run my-experiment/recipe.yaml --id terminal-skills-01 --resume` 继续失败或中断的实验，提供当前 Recipe，沿用原工作目录和实验 ID。
-- 用 `arsi dashboard --port <端口号>` 查看候选、测量和调用记录。从包含 `.rsi/` 的同一工作目录执行，并打开命令输出的地址。`Reflection & Memory` 页签还可检查经验与修订版本，并预览、应用 Reflection 修改；详见[工作台](guides/running-experiments_zh.md#工作台)。启动、恢复和取消仍通过 CLI 操作。
+- 用 `arsi dashboard --port <端口号>` 查看候选、测量和调用记录。从包含 `.rsi/` 的同一工作目录执行，并打开命令输出的地址。`Reflection & Memory` 页签还可检查经验与修订版本，并预览、应用或导出两类快照；详见[工作台](guides/running-experiments_zh.md#工作台)。启动、恢复和取消仍通过 CLI 操作。
 
 运行后应分别查看保存的实验状态、Measurement 状态与覆盖率，以及得分。参见 [实验运行与排障](guides/running-experiments_zh.md)。
 

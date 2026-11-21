@@ -29,7 +29,7 @@ flowchart TD
     C -- 是 --> E["加载并校验 Recipe<br/>合并生效配置"]
     E --> F{"校验成功？"}
     F -- 否 --> G["记录 recipe.validate 失败"]
-    F -- 是 --> H["准备隔离临时 Runtime<br/>遍历 Application、绑定和 Reflection"]
+    F -- 是 --> H["准备隔离临时 Runtime<br/>遍历 Application、绑定和学习模块"]
     H --> I["检查当前组件声明的本地路径"]
     I --> J{"执行完整检查且组件<br/>声明了 doctor 回调？"}
     J -- 是 --> K["执行 doctor 回调"]
@@ -46,10 +46,10 @@ flowchart TD
 ```
 
 1. **加载注册。** CLI 沿用正常 Runtime 注册流程，加载内置组件、`~/.arsi/plugins/<name>/index.mjs` 中的用户扩展，以及 `--plugin-dir` 指定的扩展。
-2. **加载生效 Recipe。** `Recipe.load` 校验 Schema、绑定、契约兼容性、Policy 编译、预算和已声明的 Reflection 资源。
+2. **加载生效 Recipe。** `Recipe.load` 校验 Schema、绑定、契约兼容性、Policy 编译、预算和已启用的 Memory 和 Reflection 资源。
    - 探测使用合并 Policy 默认配置与 Recipe 覆盖后的配置。
    - 加载失败时输出失败诊断，不再执行组件探测。
-3. **检查已声明的本地路径。** 对 Application、每个生效绑定及已配置的 Reflection 实现，检查 Schema 中用 `x-rsi-path` 标记的本地文件或目录是否存在、类型是否正确、是否可读。
+3. **检查已声明的本地路径。** 对 Application、每个生效绑定及每个已启用的学习模块，检查 Schema 中用 `x-rsi-path` 标记的本地文件或目录是否存在、类型是否正确、是否可读。
 4. **执行组件检查。** 默认情况下，框架调用组件定义上声明的 `doctor` 函数并收集它返回的 `DoctorResult`。前提不可用时，依赖检查可记为 `unchecked`，独立检查继续运行。`--static` 跳过所有回调，省去回调中的模型访问、实例准备和 SDK 探测。使用该选项或组件省略回调时，报告将 `<binding>.plugin` 记为 `unchecked` 并说明原因。
 5. **清理并输出。** RSI 检查使用隔离临时存储，传递取消信号，释放自己创建的实例与进程，并删除临时文件。原有 artifacts 可作为输入读取，RSI 产生的捕获与写入留在临时 Runtime 内。
 
@@ -97,6 +97,8 @@ flowchart TD
 | `agent.opencode` | 检查 V2 CLI 版本、必要参数，以及原生配置能否与 RSI 只读 Agent 组合。使用独立实例，可能刷新原生缓存。 |
 
 ### Proposer、Memory、Reflection 与 Selector
+
+关闭的模块会产生一条 `unchecked` 状态记录；Doctor 只探测已启用模块的资源。使用 `memory.seed.fromExperiment` 时会检查来源实验及其快照。
 
 | 实现                        | 实际检查                                                                                                                                       |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
