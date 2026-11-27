@@ -17,7 +17,6 @@ GitHub 在预合并版本上运行 `L1-Fast`。纯文档改动只执行 Markdown
 使用维护者控制的专用检出目录，让 `origin` 指向接收 PR 的仓库。按锁文件安装依赖，并登录 Codex CLI 和 GitHub CLI。外层 Worker 需要读取 Actions、发布 PR 评论和解决检视线程的 GitHub 权限。运行一个 `pnpm review:worker` 进程并保持运行，使用 Ctrl+C 停止。要对指定 PR 检查一次，可运行：
 
 ```sh
-exit 2
 pnpm review:worker --once --repo ARSI-LAB/ARSI --pull-number 123
 ```
 
