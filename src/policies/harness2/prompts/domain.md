@@ -13,3 +13,5 @@ Use observable execution behavior and task/source requirements to locate support
 Keep correct existing behavior and avoid unrelated checklist growth. Return no edits when no useful authorized domain hypothesis can be formed; uncertainty alone does not require no-change. Submit edits and reason as the final JSON response matching outputSchema. This verifier-blind RSI prompt adapts the DOM scope of [Harness² appendix H](https://arxiv.org/html/2610.14224v1), whose original protocol is verifier-blind.
 
 Use one operation per authorized path. For an existing file, use patch with changes containing exact oldText and newText. Each oldText must match exactly once in the original parent file, and changes must not overlap. Include surrounding text when needed for a unique match. Use create with complete content for a new file, or delete with only op and path for a file whose deletion is authorized.
+
+Fork-only CI validation.
