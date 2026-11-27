@@ -17,12 +17,12 @@ GitHub runs `L1-Fast` on the proposed merge. Documentation-only changes take the
 Use a dedicated, maintainer-controlled checkout with `origin` pointing to the repository that receives the PRs. Install the locked dependencies and sign in to the Codex CLI and GitHub CLI. The outer worker needs GitHub access to read Actions and publish PR comments and thread resolutions. Start one `pnpm review:worker` process and leave it running. Stop it with Ctrl+C. To inspect one PR once, run:
 
 ```sh
-pnpm review:worker --once --repo ARSI-LAB/ARSI --pr 123
+pnpm review:worker --once --repo ARSI-LAB/ARSI --pull-request 123
 ```
 
 The worker checks for a successful fast job on the current head. Member PRs qualify automatically. For an external contributor, a maintainer applies the `ai-review` label or comments `/ai-review`. Review uses the trusted base prompt, applicable guides and, when published, the team review skill. Codex inspects an ephemeral worktree with its native read-only sandbox. The outer worker publishes the result.
 
-Read the sticky summary for the reviewed SHA, round and verifier result. Verified Important findings open inline threads. Reply with a fix or rationale. A new commit triggers an incremental review of the changes and open threads. After three rounds, a maintainer can request another new-head review with `--pr 123 --manual`. A `[needs-human]` thread calls for a maintainer decision. When AI review is skipped or the workstation is offline, perform a full human review.
+Read the sticky summary for the reviewed SHA, round and verifier result. Verified Important findings open inline threads. Reply with a fix or rationale. A new commit triggers an incremental review of the changes and open threads. After three rounds, a maintainer can request another new-head review with `--pull-request 123 --manual`. A `[needs-human]` thread calls for a maintainer decision. When AI review is skipped or the workstation is offline, perform a full human review.
 
 ## Configure the merge gate
 
