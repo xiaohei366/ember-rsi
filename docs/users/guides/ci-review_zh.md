@@ -17,12 +17,12 @@ GitHub 在预合并版本上运行 `L1-Fast`。纯文档改动只执行 Markdown
 使用维护者控制的专用检出目录，让 `origin` 指向接收 PR 的仓库。按锁文件安装依赖，并登录 Codex CLI 和 GitHub CLI。外层 Worker 需要读取 Actions、发布 PR 评论和解决检视线程的 GitHub 权限。运行一个 `pnpm review:worker` 进程并保持运行，使用 Ctrl+C 停止。要对指定 PR 检查一次，可运行：
 
 ```sh
-pnpm review:worker --once --repo ARSI-LAB/ARSI --pr 123
+pnpm review:worker --once --repo ARSI-LAB/ARSI --pull-request 123
 ```
 
 Worker 检查当前提交上的快速任务是否通过。仓库成员的 PR 自动进入检视。外部贡献者的 PR 由维护者添加 `ai-review` 标签或评论 `/ai-review`。检视使用可信基线上的提示词、相关指南及已发布的团队检视 Skill。Codex 以原生只读沙箱检查临时工作树，外层 Worker 负责发布结果。
 
-汇总评论记录已检视的 SHA、轮次和复核结果。经复核的 Important 问题会建立行内线程，作者可以回复修复措施或理由。新提交触发增量检视，同时检查原有开放线程。三轮后，维护者可用 `--pr 123 --manual` 检视新的提交。`[needs-human]` 表示需要维护者裁定。AI 检视被跳过或工作站离线时，由人工完成完整检视。
+汇总评论记录已检视的 SHA、轮次和复核结果。经复核的 Important 问题会建立行内线程，作者可以回复修复措施或理由。新提交触发增量检视，同时检查原有开放线程。三轮后，维护者可用 `--pull-request 123 --manual` 检视新的提交。`[needs-human]` 表示需要维护者裁定。AI 检视被跳过或工作站离线时，由人工完成完整检视。
 
 ## 设置合并门禁
 
