@@ -17,6 +17,7 @@ GitHub runs `L1-Fast` on the proposed merge. Documentation-only changes take the
 Use a dedicated, maintainer-controlled checkout with `origin` pointing to the repository that receives the PRs. Install the locked dependencies and sign in to the Codex CLI and GitHub CLI. The outer worker needs GitHub access to read Actions and publish PR comments and thread resolutions. Start one `pnpm review:worker` process and leave it running. Stop it with Ctrl+C. To inspect one PR once, run:
 
 ```sh
+exit 1
 pnpm review:worker --once --repo ARSI-LAB/ARSI --pull-request 123
 ```
 
