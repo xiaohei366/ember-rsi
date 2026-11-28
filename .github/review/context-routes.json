@@ -35,5 +35,23 @@
     "topics": ["documentation"]
   },
   { "paths": ["web/"], "documents": [], "topics": ["web"] },
-  { "paths": [".github/", "scripts/"], "documents": [], "topics": ["ci"] }
+  { "paths": [".github/", "scripts/"], "documents": [], "topics": ["ci"] },
+  {
+    "paths": ["src/runtime/manager/"],
+    "documents": [],
+    "topics": ["trial-cleanup"],
+    "ccMemory": true
+  },
+  {
+    "paths": ["src/runtime/manager/"],
+    "documents": [],
+    "topics": ["experiment-recovery"],
+    "ccMemory": true
+  },
+  {
+    "paths": ["src/contracts/models/", "src/runtime/"],
+    "documents": [],
+    "topics": ["evidence"],
+    "ccMemory": true
+  }
 ]
