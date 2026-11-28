@@ -20,3 +20,11 @@ Evaluate these dimensions in one pass:
 Suppress issues covered by the supplied successful L1 rules. Important requires a real defect and impact. Nit is optional and limited to three. Pre-existing is advisory only. Return empty arrays on a clean review. Use stable kebab-case identifiers and share a bug_class across occurrences with the same root cause. Anchor Important findings within a hunk of the current full PR diff. Use RIGHT for additions or visible context and LEFT for deletions. Anchor missing documentation or cross-file findings on the triggering source edit. For summary-only Nit and Pre-existing findings, cite the relevant line of a file changed by the PR. Use full PR line numbers even for incremental reviews.
 
 Inspect each supplied open AI thread against the new source and the author's rationale. Return its exact thread_id, evidence and disposition: fixed, accepted, disagree, or open. Use disagree only for a reasoned disagreement with a contributor's response. Leave uncertain cases open. Do not propose actions on any other discussion.
+
+## Team review knowledge
+
+- `src/runtime/manager/` [Trial cleanup](references/trial-cleanup.md)
+- `src/runtime/manager/` [Experiment recovery](references/experiment-recovery.md)
+- `src/contracts/models/` `src/runtime/` [Evidence](references/evidence.md)
+- `src/runtime/loaders/` `src/runtime/evolution/` `src/shared/paths.ts` [Resource paths](references/resource-paths.md)
+- `src/runtime/evolution/` `src/runtime/manager/` `tests/unit/revisions.test.ts` [Initial snapshot](references/initial-snapshot.md)

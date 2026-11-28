@@ -35,5 +35,43 @@
     "topics": ["documentation"]
   },
   { "paths": ["web/"], "documents": [], "topics": ["web"] },
-  { "paths": [".github/", "scripts/"], "documents": [], "topics": ["ci"] }
+  { "paths": [".github/", "scripts/"], "documents": [], "topics": ["ci"] },
+  {
+    "paths": ["src/runtime/manager/"],
+    "documents": [],
+    "topics": ["trial-cleanup"],
+    "ccMemory": true
+  },
+  {
+    "paths": ["src/runtime/manager/"],
+    "documents": [],
+    "topics": ["experiment-recovery"],
+    "ccMemory": true
+  },
+  {
+    "paths": ["src/contracts/models/", "src/runtime/"],
+    "documents": [],
+    "topics": ["evidence"],
+    "ccMemory": true
+  },
+  {
+    "paths": [
+      "src/runtime/loaders/",
+      "src/runtime/evolution/",
+      "src/shared/paths.ts"
+    ],
+    "documents": [],
+    "topics": ["resource-paths"],
+    "ccMemory": true
+  },
+  {
+    "paths": [
+      "src/runtime/evolution/",
+      "src/runtime/manager/",
+      "tests/unit/revisions.test.ts"
+    ],
+    "documents": [],
+    "topics": ["initial-snapshot"],
+    "ccMemory": true
+  }
 ]
