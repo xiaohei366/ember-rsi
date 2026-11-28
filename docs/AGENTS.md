@@ -39,3 +39,5 @@ Create design documents, task breakdowns, and task records only when explicitly 
 - Distinguish design goals, implemented code, static checks, simulated verification, real runs, and score improvements. Record unexecuted, failed, skipped, and unknown usage honestly. Historical evidence is not current verification.
 - Formal experiment records state key configuration, scoring rules, main results, usage, and failures. Exclude temporary output and complete raw records. Sanitize shared materials; do not include secrets or personal machine configuration.
 - Check links and formatting after moves or cleanup. Reference locations in historical documents may be repaired, but their conclusions must remain unchanged.
+
+Fork CI timing fixture.
