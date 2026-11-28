@@ -26,3 +26,5 @@ Inspect each supplied open AI thread against the new source and the author's rat
 - `src/runtime/manager/` [Trial cleanup](references/trial-cleanup.md)
 - `src/runtime/manager/` [Experiment recovery](references/experiment-recovery.md)
 - `src/contracts/models/` `src/runtime/` [Evidence](references/evidence.md)
+- `src/runtime/loaders/` `src/runtime/evolution/` `src/shared/paths.ts` [Resource paths](references/resource-paths.md)
+- `src/runtime/evolution/` `src/runtime/manager/` `tests/unit/revisions.test.ts` [Initial snapshot](references/initial-snapshot.md)

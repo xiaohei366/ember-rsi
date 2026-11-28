@@ -53,5 +53,25 @@
     "documents": [],
     "topics": ["evidence"],
     "ccMemory": true
+  },
+  {
+    "paths": [
+      "src/runtime/loaders/",
+      "src/runtime/evolution/",
+      "src/shared/paths.ts"
+    ],
+    "documents": [],
+    "topics": ["resource-paths"],
+    "ccMemory": true
+  },
+  {
+    "paths": [
+      "src/runtime/evolution/",
+      "src/runtime/manager/",
+      "tests/unit/revisions.test.ts"
+    ],
+    "documents": [],
+    "topics": ["initial-snapshot"],
+    "ccMemory": true
   }
 ]
